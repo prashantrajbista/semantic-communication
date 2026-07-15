@@ -16,3 +16,7 @@ wheels/
 .ipynb_checkpoints/
 docs/
 .claude/
+
+# secrets
+.env
+wandb/

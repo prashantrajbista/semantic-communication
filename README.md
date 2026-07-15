@@ -46,16 +46,39 @@ doesn't denoise:
 
 ```bash
 mkdir -p data && cd data
-curl -L -o clean_trainset.zip \
-  "https://datashare.ed.ac.uk/bitstream/handle/10283/2791/clean_trainset_wav.zip"
-curl -L -o clean_testset.zip \
-  "https://datashare.ed.ac.uk/bitstream/handle/10283/2791/clean_testset_wav.zip"
-unzip clean_trainset.zip && unzip clean_testset.zip
+curl -L -o clean_trainset_28spk_wav.zip \
+  "https://datashare.ed.ac.uk/bitstreams/245452b6-6235-44b6-a6f9-e7eb19797769/download"
+curl -L -o clean_testset_wav.zip \
+  "https://datashare.ed.ac.uk/bitstreams/dec213d3-bf57-4777-9663-c24bdce92d5e/download"
+unzip clean_trainset_28spk_wav.zip && unzip clean_testset_wav.zip
 ```
 
-Several GB — not downloaded automatically by any notebook. Without it, stage 5 still
-runs (and verifies) on the toy synthetic dataset; rerun after downloading for
-paper-comparable numbers.
+(DataShare's older `/bitstream/handle/<id>/<name>.zip` URLs no longer serve the file
+directly — these bitstream-UUID URLs are the current working ones, found via the
+[handle page](https://datashare.ed.ac.uk/handle/10283/2791)'s download links.)
+
+Several GB — not downloaded automatically by any notebook (`scripts/train.py` does
+download it automatically, falling back to toy data if the download fails). Without
+it, stage 5 still runs (and verifies) on the toy synthetic dataset; rerun after
+downloading for paper-comparable numbers.
+
+## Training script
+
+`scripts/train.py` downloads the real dataset (if not already present under `data/`),
+trains `DeepSC_S`, saves checkpoints to `checkpoints/`, and logs to Weights & Biases:
+
+```bash
+uv run python scripts/train.py --epochs 40 --channel awgn
+```
+
+W&B key resolution: put `WANDB_API_KEY=...` in a `.env` file in the project root (not
+committed — see `.gitignore`), or export it in the environment. If neither is set,
+training continues without logging in — W&B runs in disabled mode instead of
+prompting or failing.
+
+Key flags: `--channel {awgn,rayleigh,rician}`, `--subset-size`, `--epochs`,
+`--batch-size`, `--lr`, `--depth` (compression knob), `--snr-low`/`--snr-high`.
+Run `uv run python scripts/train.py --help` for the full list.
 
 ## Key design choices
 
