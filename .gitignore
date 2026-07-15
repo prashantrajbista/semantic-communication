@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Data + checkpoints (plan: data/ and checkpoints/ are gitignored)
+/data/
+/checkpoints/
+
+.ipynb_checkpoints/
+docs/
+.claude/

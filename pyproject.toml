@@ -1,0 +1,17 @@
+[project]
+name = "semantic-communication"
+version = "0.1.0"
+description = "PyTorch reproduction of DeepSC-S, a semantic communication system for speech"
+requires-python = ">=3.11.9"
+dependencies = [
+    "ipykernel>=7.3.0",
+    "jupyter>=1.1.1",
+    "librosa>=0.11.0",
+    "matplotlib>=3.11.0",
+    "numpy>=2.4.6",
+    "pesq>=0.0.4",
+    "scipy>=1.17.1",
+    "soundfile>=0.14.0",
+    "torch>=2.13.0",
+    "torchaudio>=2.11.0",
+]
