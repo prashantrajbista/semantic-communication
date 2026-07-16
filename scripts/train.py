@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -54,40 +55,77 @@ def load_env_key(name: str, env_path: Path = ROOT / ".env") -> str | None:
     return os.environ.get(name)
 
 
-def download_and_extract(zip_name: str, dest_dir: Path):
-    """Fetch `<zip_name>.zip` from the Edinburgh DataShare and extract into data/.
-    ponytail: assumes the zip extracts directly into `<zip_name>/*.wav`; several GB,
-    so this is skipped entirely if dest_dir already has .wav files."""
+def _fetch(url: str, zip_path: Path, attempts: int = 3):
+    """GET with a browser-like User-Agent (bare urllib UA gets 403'd by some WAFs)
+    and a couple of retries with backoff, since DataShare's per-IP rate limiting
+    (X-RateLimit-* headers) can 403 transiently — this is more likely on shared/
+    datacenter IP ranges (e.g. Colab, cloud VMs) than on a residential connection."""
+    import time
+
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            with urllib.request.urlopen(req) as resp, open(zip_path, "wb") as out:
+                total = int(resp.headers.get("Content-Length", 0))
+                read = 0
+                while chunk := resp.read(1 << 20):
+                    out.write(chunk)
+                    read += len(chunk)
+                    if total:
+                        print(f"\r  {read * 100 / total:5.1f}%", end="", flush=True)
+            print()
+            return
+        except urllib.error.HTTPError as e:
+            last_err = e
+            print(f"\nattempt {attempt}/{attempts} failed: {e}")
+            if attempt < attempts:
+                time.sleep(5 * attempt)
+    raise RuntimeError(
+        f"download failed after {attempts} attempts ({last_err!r}). "
+        "If this is a 403 on a cloud/hosted notebook (Colab, etc.), DataShare is "
+        "likely rate-limiting or blocking that shared IP range — download the zip "
+        "manually in a browser (or via your own Drive), then pass its path with "
+        "--train-zip/--test-zip to skip the network fetch."
+    )
+
+
+def download_and_extract(zip_name: str, dest_dir: Path, local_zip: str | None = None):
+    """Fetch `<zip_name>.zip` from the Edinburgh DataShare (or use a pre-downloaded
+    `local_zip`) and extract into data/. ponytail: assumes the zip extracts directly
+    into `<zip_name>/*.wav`; several GB, so this is skipped entirely if dest_dir
+    already has .wav files."""
     if dest_dir.exists() and any(dest_dir.glob("*.wav")):
         print(f"{dest_dir} already populated, skipping download.")
         return
     dest_dir.parent.mkdir(parents=True, exist_ok=True)
-    zip_path = dest_dir.parent / f"{zip_name}.zip"
-    url = f"https://datashare.ed.ac.uk/bitstreams/{DATASET_BITSTREAMS[zip_name]}/download"
-    print(f"downloading {url} -> {zip_path}")
 
-    def _progress(count, block_size, total_size):
-        if total_size > 0:
-            pct = min(count * block_size * 100 / total_size, 100)
-            print(f"\r  {pct:5.1f}%", end="", flush=True)
+    if local_zip:
+        zip_path = Path(local_zip)
+        print(f"using local zip {zip_path}")
+    else:
+        zip_path = dest_dir.parent / f"{zip_name}.zip"
+        url = f"https://datashare.ed.ac.uk/bitstreams/{DATASET_BITSTREAMS[zip_name]}/download"
+        print(f"downloading {url} -> {zip_path}")
+        _fetch(url, zip_path)
 
-    urllib.request.urlretrieve(url, zip_path, reporthook=_progress)
-    print()
     if not zipfile.is_zipfile(zip_path):
-        zip_path.unlink()
-        raise RuntimeError(f"{url} did not return a zip file (DataShare API may have changed again)")
+        if not local_zip:
+            zip_path.unlink()
+        raise RuntimeError(f"{zip_path} is not a valid zip file")
     print(f"extracting {zip_path} -> {dest_dir.parent}")
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(dest_dir.parent)
-    zip_path.unlink()  # several GB — don't keep the zip alongside the extracted wavs
+    if not local_zip:
+        zip_path.unlink()  # several GB — don't keep the zip alongside the extracted wavs
 
 
-def ensure_dataset(data_dir: Path) -> tuple[Path, Path]:
+def ensure_dataset(data_dir: Path, train_zip: str | None = None, test_zip: str | None = None) -> tuple[Path, Path]:
     train_dir = data_dir / "clean_trainset_28spk_wav"
     test_dir = data_dir / "clean_testset_wav"
     try:
-        download_and_extract("clean_trainset_28spk_wav", train_dir)
-        download_and_extract("clean_testset_wav", test_dir)
+        download_and_extract("clean_trainset_28spk_wav", train_dir, train_zip)
+        download_and_extract("clean_testset_wav", test_dir, test_zip)
         return train_dir, test_dir
     except Exception as e:
         print(f"dataset download failed ({e!r}); falling back to toy synthetic data.")
@@ -101,6 +139,8 @@ def build_channel(kind: str, snr_db: float, rician_k: float) -> ChannelLayer:
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data-dir", default=str(ROOT / "data"))
+    p.add_argument("--train-zip", default=None, help="pre-downloaded clean_trainset_28spk_wav.zip, skips the network fetch")
+    p.add_argument("--test-zip", default=None, help="pre-downloaded clean_testset_wav.zip, skips the network fetch")
     p.add_argument("--checkpoint-dir", default=str(ROOT / "checkpoints"))
     p.add_argument("--subset-size", type=int, default=2000)
     p.add_argument("--epochs", type=int, default=40)
@@ -134,7 +174,7 @@ def main():
         print("no WANDB_API_KEY in .env or environment — W&B logging disabled, continuing without it.")
     run = wandb.init(project=args.project, name=args.run_name, config=vars(args))
 
-    train_dir, test_dir = ensure_dataset(Path(args.data_dir))
+    train_dir, test_dir = ensure_dataset(Path(args.data_dir), args.train_zip, args.test_zip)
     if train_dir is not None:
         full_train = SpeechDataset(train_dir, train=True, seed=args.seed)
         rng = np.random.default_rng(args.seed)
