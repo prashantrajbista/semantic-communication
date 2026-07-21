@@ -131,15 +131,20 @@ def download_from_hf(data_dir: Path, dataset_name: str = "JacobLinCool/VoiceBank
         print(f"{train_dir} / {test_dir} already populated, skipping HF download.")
         return train_dir, test_dir
 
-    import soundfile as sf
-    from datasets import load_dataset
+    import io
 
+    import soundfile as sf
+    from datasets import Audio, load_dataset
+
+    # decode=False: skip datasets' torchcodec-based auto-decode, hand back raw file
+    # bytes instead — soundfile (already a dependency) reads those directly.
     ds = load_dataset(dataset_name)
+    ds = ds.cast_column("clean", Audio(decode=False))
     for split, out_dir in (("train", train_dir), ("test", test_dir)):
         out_dir.mkdir(parents=True, exist_ok=True)
         for row in ds[split]:
-            clean = row["clean"]
-            sf.write(str(out_dir / f"{row['id']}.wav"), clean["array"], clean["sampling_rate"])
+            data, sr = sf.read(io.BytesIO(row["clean"]["bytes"]), dtype="float32")
+            sf.write(str(out_dir / f"{row['id']}.wav"), data, sr)
     return train_dir, test_dir
 
 
