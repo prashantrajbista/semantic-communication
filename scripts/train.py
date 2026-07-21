@@ -137,8 +137,12 @@ def download_from_hf(data_dir: Path, dataset_name: str = "JacobLinCool/VoiceBank
     from datasets import Audio, load_dataset
 
     # decode=False: skip datasets' torchcodec-based auto-decode, hand back raw file
-    # bytes instead — soundfile (already a dependency) reads those directly.
+    # bytes instead — soundfile (already a dependency) reads those directly. Drop
+    # "noisy" (unused here) rather than also disabling its decode — it's still
+    # Audio(decode=True) by default and would otherwise trip the same torchcodec
+    # error when a row gets formatted.
     ds = load_dataset(dataset_name)
+    ds = ds.remove_columns("noisy")
     ds = ds.cast_column("clean", Audio(decode=False))
     for split, out_dir in (("train", train_dir), ("test", test_dir)):
         out_dir.mkdir(parents=True, exist_ok=True)
