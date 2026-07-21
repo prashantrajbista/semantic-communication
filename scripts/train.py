@@ -120,10 +120,37 @@ def download_and_extract(zip_name: str, dest_dir: Path, local_zip: str | None = 
         zip_path.unlink()  # several GB — don't keep the zip alongside the extracted wavs
 
 
-def ensure_dataset(data_dir: Path, train_zip: str | None = None, test_zip: str | None = None) -> tuple[Path, Path]:
+def download_from_hf(data_dir: Path, dataset_name: str = "JacobLinCool/VoiceBank-DEMAND-16k") -> tuple[Path, Path]:
+    """Fetch clean speech via the HF Datasets hub instead of the Edinburgh DataShare
+    zip — HF's CDN doesn't rate-limit/block cloud notebook IP ranges the way DataShare's
+    WAF does. Writes wavs into the same clean_trainset_28spk_wav/clean_testset_wav
+    layout SpeechDataset already expects (16 kHz; load_audio resamples to 8 kHz anyway)."""
     train_dir = data_dir / "clean_trainset_28spk_wav"
     test_dir = data_dir / "clean_testset_wav"
+    if all(d.exists() and any(d.glob("*.wav")) for d in (train_dir, test_dir)):
+        print(f"{train_dir} / {test_dir} already populated, skipping HF download.")
+        return train_dir, test_dir
+
+    import soundfile as sf
+    from datasets import load_dataset
+
+    ds = load_dataset(dataset_name)
+    for split, out_dir in (("train", train_dir), ("test", test_dir)):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for row in ds[split]:
+            clean = row["clean"]
+            sf.write(str(out_dir / f"{row['id']}.wav"), clean["array"], clean["sampling_rate"])
+    return train_dir, test_dir
+
+
+def ensure_dataset(
+    data_dir: Path, train_zip: str | None = None, test_zip: str | None = None, source: str = "edinburgh"
+) -> tuple[Path, Path]:
     try:
+        if source == "hf":
+            return download_from_hf(data_dir)
+        train_dir = data_dir / "clean_trainset_28spk_wav"
+        test_dir = data_dir / "clean_testset_wav"
         download_and_extract("clean_trainset_28spk_wav", train_dir, train_zip)
         download_and_extract("clean_testset_wav", test_dir, test_zip)
         return train_dir, test_dir
@@ -141,6 +168,9 @@ def main():
     p.add_argument("--data-dir", default=str(ROOT / "data"))
     p.add_argument("--train-zip", default=None, help="pre-downloaded clean_trainset_28spk_wav.zip, skips the network fetch")
     p.add_argument("--test-zip", default=None, help="pre-downloaded clean_testset_wav.zip, skips the network fetch")
+    p.add_argument("--source", choices=["edinburgh", "hf"], default="edinburgh",
+                   help="dataset source: Edinburgh DataShare zip (default), or HF hub mirror "
+                        "(JacobLinCool/VoiceBank-DEMAND-16k) which avoids cloud-IP 403s")
     p.add_argument("--checkpoint-dir", default=str(ROOT / "checkpoints"))
     p.add_argument("--subset-size", type=int, default=2000)
     p.add_argument("--epochs", type=int, default=40)
@@ -174,7 +204,7 @@ def main():
         print("no WANDB_API_KEY in .env or environment — W&B logging disabled, continuing without it.")
     run = wandb.init(project=args.project, name=args.run_name, config=vars(args))
 
-    train_dir, test_dir = ensure_dataset(Path(args.data_dir), args.train_zip, args.test_zip)
+    train_dir, test_dir = ensure_dataset(Path(args.data_dir), args.train_zip, args.test_zip, args.source)
     if train_dir is not None:
         full_train = SpeechDataset(train_dir, train=True, seed=args.seed)
         rng = np.random.default_rng(args.seed)
