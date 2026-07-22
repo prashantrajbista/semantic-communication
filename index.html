@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Learning Notes — Reproducing DeepSC-S</title>
+<meta name="description" content="A staged lab notebook on reproducing DeepSC-S, a neural joint source-channel coding system for speech — what was learned at each of its five stages.">
+<style>
+  /* ---------- tokens ---------- */
+  :root {
+    --bg: #eef2f5;
+    --surface: #ffffff;
+    --surface-2: #e4eaef;
+    --ink: #16232f;
+    --ink-soft: #4b5c6b;
+    --ink-faint: #7c8b98;
+    --accent: #a85a24;
+    --accent-ink: #ffffff;
+    --rule: #c7d2da;
+    --rule-strong: #a9b8c3;
+    --awgn: #2f6fed;
+    --rayleigh: #b8672a;
+    --rician: #23886b;
+    --code-bg: #e3e9ee;
+    --shadow: 0 1px 2px rgba(22,35,47,0.06), 0 6px 20px rgba(22,35,47,0.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1620;
+      --surface: #121f2b;
+      --surface-2: #17273536;
+      --surface-2: #17273a;
+      --ink: #dce6ee;
+      --ink-soft: #9db0bf;
+      --ink-faint: #6d8090;
+      --accent: #e2913f;
+      --accent-ink: #16130c;
+      --rule: #22384a;
+      --rule-strong: #2d4a60;
+      --awgn: #6ea8ff;
+      --rayleigh: #f0a35c;
+      --rician: #4fd8a0;
+      --code-bg: #0e1a24;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 10px 30px rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1620; --surface: #121f2b; --surface-2: #17273a;
+    --ink: #dce6ee; --ink-soft: #9db0bf; --ink-faint: #6d8090;
+    --accent: #e2913f; --accent-ink: #16130c;
+    --rule: #22384a; --rule-strong: #2d4a60;
+    --awgn: #6ea8ff; --rayleigh: #f0a35c; --rician: #4fd8a0;
+    --code-bg: #0e1a24;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 10px 30px rgba(0,0,0,0.35);
+  }
+  :root[data-theme="light"] {
+    --bg: #eef2f5; --surface: #ffffff; --surface-2: #e4eaef;
+    --ink: #16232f; --ink-soft: #4b5c6b; --ink-faint: #7c8b98;
+    --accent: #a85a24; --accent-ink: #ffffff;
+    --rule: #c7d2da; --rule-strong: #a9b8c3;
+    --awgn: #2f6fed; --rayleigh: #b8672a; --rician: #23886b;
+    --code-bg: #e3e9ee;
+    --shadow: 0 1px 2px rgba(22,35,47,0.06), 0 6px 20px rgba(22,35,47,0.05);
+  }
+
+  /* ---------- reset-ish ---------- */
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3 { font-family: ui-serif, Georgia, "Iowan Old Style", "Palatino Linotype", serif; text-wrap: balance; color: var(--ink); font-weight: 600; }
+  code, .mono, .num, th, td { font-variant-numeric: tabular-nums; }
+  code, pre, .mono {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  code { background: var(--code-bg); padding: 0.12em 0.4em; border-radius: 3px; font-size: 0.88em; color: var(--ink); }
+  pre {
+    background: var(--code-bg);
+    padding: 14px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 0.85em;
+    line-height: 1.55;
+    border: 1px solid var(--rule);
+  }
+  pre code { background: none; padding: 0; }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible, .toc a:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px;
+  }
+  hr.rule { border: none; border-top: 1px solid var(--rule); margin: 0; }
+  ::selection { background: var(--accent); color: var(--accent-ink); }
+
+  /* ---------- layout shell ---------- */
+  .shell {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 28px;
+    display: grid;
+    grid-template-columns: 210px minmax(0, 720px);
+    gap: 56px;
+    align-items: start;
+  }
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: 1fr; padding: 0 20px; }
+  }
+
+  /* ---------- header / hero ---------- */
+  header.hero {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 56px 28px 40px;
+  }
+  @media (max-width: 900px) { header.hero { padding: 40px 20px 28px; } }
+  .eyebrow {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 14px;
+  }
+  h1.title {
+    font-size: clamp(32px, 4.4vw, 48px);
+    line-height: 1.08;
+    margin: 0 0 18px;
+    max-width: 15ch;
+  }
+  .thesis {
+    font-size: 19px;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0 0 28px;
+  }
+  .hero-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 22px;
+    font-size: 14px;
+    color: var(--ink-faint);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  .hero-meta a { color: var(--ink-soft); }
+
+  /* signal-chain diagram */
+  .chain {
+    margin: 36px 0 4px;
+    max-width: 720px;
+  }
+  .chain svg { width: 100%; height: auto; display: block; }
+  .chain-caption {
+    font-size: 13px;
+    color: var(--ink-faint);
+    margin-top: 8px;
+  }
+
+  /* ---------- TOC ---------- */
+  nav.toc {
+    position: sticky;
+    top: 28px;
+  }
+  nav.toc ol {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border-left: 1px solid var(--rule);
+  }
+  nav.toc li { position: relative; }
+  nav.toc a {
+    display: block;
+    padding: 7px 0 7px 16px;
+    font-size: 13.5px;
+    color: var(--ink-soft);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    margin-left: -1px;
+    transition: color .15s ease, border-color .15s ease;
+  }
+  nav.toc a .n {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--ink-faint);
+    margin-right: 8px;
+    font-size: 12px;
+  }
+  nav.toc a:hover { color: var(--ink); }
+  nav.toc a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+  @media (max-width: 900px) {
+    nav.toc {
+      position: static;
+      overflow-x: auto;
+      padding-bottom: 6px;
+      -webkit-overflow-scrolling: touch;
+    }
+    nav.toc ol { border-left: none; display: flex; gap: 4px; white-space: nowrap; border-bottom: 1px solid var(--rule); }
+    nav.toc a { border-left: none; border-bottom: 2px solid transparent; padding: 8px 12px; }
+    nav.toc a.active { border-left-color: transparent; border-bottom-color: var(--accent); }
+  }
+
+  /* ---------- main content ---------- */
+  main { min-width: 0; padding-bottom: 40px; }
+  section.stage, section.block { padding: 46px 0; border-top: 1px solid var(--rule); scroll-margin-top: 24px; }
+  section.block:first-of-type { border-top: none; padding-top: 6px; }
+  .stage-kicker {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 6px;
+  }
+  .stage-num {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+    color: var(--accent);
+    border: 1px solid var(--rule-strong);
+    border-radius: 4px;
+    padding: 2px 8px;
+  }
+  .stage-file {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    color: var(--ink-faint);
+  }
+  section h2 { font-size: 27px; margin: 0 0 6px; }
+  section .dek { color: var(--ink-soft); font-size: 15.5px; margin: 0 0 26px; max-width: 60ch; }
+  h3.sub { font-size: 16.5px; margin: 30px 0 10px; color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-weight: 700; }
+  p { max-width: 68ch; }
+  ul, ol.list { padding-left: 22px; max-width: 66ch; }
+  li { margin: 6px 0; }
+  li::marker { color: var(--ink-faint); }
+  strong { color: var(--ink); }
+
+  .callout {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 16px 18px;
+    margin: 18px 0;
+    box-shadow: var(--shadow);
+    max-width: 66ch;
+  }
+  .callout .label {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 6px;
+    display: block;
+  }
+
+  .table-wrap { overflow-x: auto; margin: 16px 0; max-width: 720px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 8px 14px 8px 0; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th { color: var(--ink-faint); font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  td.dim { color: var(--ink-soft); }
+
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--ink-soft); margin: 10px 0 0; }
+
+  figure { margin: 22px 0; max-width: 720px; }
+  figure figcaption { font-size: 13px; color: var(--ink-faint); margin-top: 8px; }
+
+  .const-row { display: flex; gap: 22px; flex-wrap: wrap; margin: 18px 0 8px; }
+  .const-card { text-align: center; }
+  .const-card canvas { border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); display: block; }
+  .const-card span { display: block; font-size: 12.5px; color: var(--ink-soft); margin-top: 6px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+  /* takeaways */
+  .takeaway-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 22px; }
+  .takeaway-card { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 18px 20px; box-shadow: var(--shadow); }
+  .takeaway-card h4 { margin: 0 0 8px; font-size: 15px; color: var(--ink); }
+  .takeaway-card p { margin: 0; font-size: 14px; color: var(--ink-soft); max-width: none; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding: 34px 0 60px;
+  }
+  footer .foot-links { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 14px; margin-bottom: 14px; }
+  footer .fine { font-size: 13px; color: var(--ink-faint); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .fade-in { animation: fadeIn .5s ease both; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <p class="eyebrow">Lab notebook · deepsc-s reproduction</p>
+  <h1 class="title fade-in">What five notebooks taught me about semantic communication</h1>
+  <p class="thesis fade-in">
+    Notes from reproducing <strong>DeepSC-S</strong> (Weng, Qin &amp; Li, 2021) — a neural network that
+    replaces a speech codec and a channel coder with one model, trained end-to-end to survive a noisy
+    radio channel. Five stages, each one mechanism proven in isolation before trusting the next.
+  </p>
+  <div class="hero-meta">
+    <span>Paper: <a href="https://arxiv.org/abs/2012.05369" target="_blank" rel="noopener">arXiv:2012.05369</a></span>
+    <span>Repo: <a href="https://github.com/prashantrajbista/semantic-communication" target="_blank" rel="noopener">prashantrajbista/semantic-communication</a></span>
+    <span>Dataset: <a href="https://datashare.ed.ac.uk/handle/10283/2791" target="_blank" rel="noopener">Edinburgh DataShare 28-speaker (Valentini 2016)</a></span>
+  </div>
+
+  <figure class="chain">
+    <svg viewBox="0 0 720 108" role="img" aria-labelledby="chainTitle">
+      <title id="chainTitle">Signal path: waveform through semantic encoder, channel encoder, a noisy or fading channel, channel decoder, semantic decoder, back to waveform.</title>
+      <defs>
+        <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L8,4 L0,8 z" fill="var(--ink-faint)"></path>
+        </marker>
+      </defs>
+      <g font-family="ui-monospace, SF Mono, Menlo, Consolas, monospace" font-size="11.5">
+        <!-- boxes -->
+        <g>
+          <rect x="2" y="30" width="86" height="46" rx="5" fill="none" stroke="var(--rule-strong)"></rect>
+          <text x="45" y="49" text-anchor="middle" fill="var(--ink)">waveform</text>
+          <text x="45" y="64" text-anchor="middle" fill="var(--ink-faint)" font-size="10">x</text>
+        </g>
+        <line x1="90" y1="53" x2="122" y2="53" stroke="var(--ink-faint)" marker-end="url(#arrow)"></line>
+
+        <g>
+          <rect x="126" y="24" width="118" height="58" rx="5" fill="none" stroke="var(--rule-strong)"></rect>
+          <text x="185" y="49" text-anchor="middle" fill="var(--ink)">semantic</text>
+          <text x="185" y="63" text-anchor="middle" fill="var(--ink)">encoder</text>
+        </g>
+        <line x1="246" y1="53" x2="278" y2="53" stroke="var(--ink-faint)" marker-end="url(#arrow)"></line>
+
+        <g>
+          <rect x="282" y="24" width="112" height="58" rx="5" fill="none" stroke="var(--rule-strong)"></rect>
+          <text x="338" y="49" text-anchor="middle" fill="var(--ink)">channel</text>
+          <text x="338" y="63" text-anchor="middle" fill="var(--ink)">encoder</text>
+        </g>
+        <line x1="396" y1="53" x2="424" y2="53" stroke="var(--ink-faint)" marker-end="url(#arrow)"></line>
+
+        <g>
+          <rect x="428" y="14" width="100" height="78" rx="5" fill="none" stroke="var(--accent)" stroke-dasharray="3 3"></rect>
+          <text x="478" y="45" text-anchor="middle" fill="var(--accent)">channel</text>
+          <text x="478" y="59" text-anchor="middle" fill="var(--ink-faint)" font-size="9.5">awgn / fading</text>
+          <text x="478" y="74" text-anchor="middle" fill="var(--ink-faint)" font-size="9.5">y = h·x + w</text>
+        </g>
+        <line x1="530" y1="53" x2="558" y2="53" stroke="var(--ink-faint)" marker-end="url(#arrow)"></line>
+
+        <g>
+          <rect x="562" y="24" width="112" height="58" rx="5" fill="none" stroke="var(--rule-strong)"></rect>
+          <text x="618" y="49" text-anchor="middle" fill="var(--ink)">semantic</text>
+          <text x="618" y="63" text-anchor="middle" fill="var(--ink)">decoder¹</text>
+        </g>
+        <line x1="676" y1="53" x2="700" y2="53" stroke="var(--ink-faint)" marker-end="url(#arrow)"></line>
+        <text x="712" y="57" fill="var(--ink-faint)" font-size="10">x̂</text>
+      </g>
+    </svg>
+  </figure>
+  <p class="chain-caption">¹ channel decoder omitted for width — full path is encoder → channel-encoder → channel → channel-decoder → decoder.</p>
+</header>
+
+<div class="shell">
+  <nav class="toc" aria-label="Table of contents">
+    <ol>
+      <li><a href="#overview"><span class="n">·</span>Overview</a></li>
+      <li><a href="#stage-01"><span class="n">01</span>Framing</a></li>
+      <li><a href="#stage-02"><span class="n">02</span>Autoencoder</a></li>
+      <li><a href="#stage-03"><span class="n">03</span>AWGN + power</a></li>
+      <li><a href="#stage-04"><span class="n">04</span>Fading</a></li>
+      <li><a href="#stage-05"><span class="n">05</span>Real-data results</a></li>
+      <li><a href="#takeaways"><span class="n">·</span>Takeaways</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <section class="block" id="overview">
+      <h2>Why joint source-channel coding</h2>
+      <p class="dek">The pitch this whole project tests, before any code runs.</p>
+      <p>
+        A conventional transmitter splits the job in two: <strong>source coding</strong> compresses speech
+        to as few bits as possible (a codec — Opus, AMR), then <strong>channel coding</strong> adds
+        redundancy so those exact bits survive a noisy link (Turbo codes, LDPC). The stages are
+        independent and each optimizes a proxy — compression ratio, bit error rate — rather than what a
+        listener actually hears.
+      </p>
+      <p>
+        DeepSC-S collapses both stages into a single neural network, trained end-to-end against
+        reconstructed-speech quality directly. It never has to be bit-exact — only close enough that
+        the decoded waveform sounds right. That's the "semantic" claim: the network learns to protect
+        the parts of the signal that matter for meaning, not the parts that happen to be bits.
+      </p>
+      <p>
+        The five notebooks below prove that claim incrementally: framing and reconstruction first, with
+        no noise at all; then a noise channel; then a fading channel; then real speech. Every stage runs
+        and verifies on cheap synthetic data even before the real one does — so a broken later stage is
+        never explained away by "maybe it's the data."
+      </p>
+    </section>
+
+    <!-- ================= STAGE 01 ================= -->
+    <section class="stage" id="stage-01">
+      <div class="stage-kicker">
+        <span class="stage-num">01</span>
+        <span class="stage-file">01_audio_framing.ipynb</span>
+      </div>
+      <h2>Turning a waveform into an image, losslessly</h2>
+      <p class="dek">No FFT, no windowing — just a reshape. The trick is making that reshape mean something to a CNN.</p>
+
+      <h3 class="sub">Waveform vs. spectrogram</h3>
+      <p>
+        A waveform (amplitude vs. time) shows loudness, timing, silence — but hides frequency content by
+        design. A spectrogram (time × frequency × energy) shows pitch, formants, harmonics. Most audio
+        models train on a spectrogram for exactly that reason. This project doesn't use either directly —
+        it does something narrower.
+      </p>
+
+      <h3 class="sub">Framing here is a reshape, not an STFT</h3>
+      <p>
+        Classic "framing" chops audio into short overlapping windows for an FFT. This codebase's
+        <code>frame()</code> does something much simpler: take a fixed <code class="num">W = 16384</code>-sample
+        clip and reshape it into a <code class="num">128×128</code> grid, row-major, no windowing, no
+        overlap, no frequency axis.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <tr><th>step</th><th>shape</th><th>note</th></tr>
+          <tr><td>raw clip</td><td class="num">(16384,)</td><td class="dim">1-D amplitude samples</td></tr>
+          <tr><td><code>frame(x)</code></td><td class="num">(128, 128)</td><td class="dim">row 0 = samples[0:128], row 1 = samples[128:256], …</td></tr>
+          <tr><td><code>deframe(frame(x))</code></td><td class="num">SDR = ∞</td><td class="dim">bit-exact, verified at atol=0</td></tr>
+        </table>
+      </div>
+      <p>
+        Row-major keeps each row temporally contiguous, so a 2-D CNN sliding a 5×5 filter over the grid
+        is scanning real local structure — the same trick 2-D image models use, borrowed for audio.
+        Column-major reshape would scatter same-row samples 128 apart in time, destroying that locality —
+        it would look like structured noise to a convolution. <span class="mono">W = 16384</span> was chosen
+        specifically because it's a perfect square (128²) — a convenience, not a requirement.
+      </p>
+
+      <div class="callout">
+        <span class="label">Naming trap</span>
+        "Channel" means three different things in this codebase: the noisy transmission medium itself
+        (AWGN/fading), the <code>ChannelEncoder</code>/<code>ChannelDecoder</code> layers that compress the
+        tensor's feature axis, and the tensor channel axis itself (32 stacked feature maps, same sense as
+        RGB channels). Worth pinning down early — every later stage uses at least two of the three.
+      </div>
+    </section>
+
+    <!-- ================= STAGE 02 ================= -->
+    <section class="stage" id="stage-02">
+      <div class="stage-kicker">
+        <span class="stage-num">02</span>
+        <span class="stage-file">02_autoencoder_no_channel.ipynb</span>
+      </div>
+      <h2>Proving the encoder/decoder alone, channel off</h2>
+      <p class="dek">If reconstruction fails with the easiest possible channel — none — nothing downstream can be trusted.</p>
+
+      <p>
+        <code>DeepSC_S</code> is 115,177 parameters, spatial size 128×128 held constant throughout by
+        "same" padding — only the channel-depth axis moves.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <tr><th>stage</th><th>shape</th><th>role</th></tr>
+          <tr><td>input</td><td class="num">(B, 1, 128, 128)</td><td class="dim">framed waveform</td></tr>
+          <tr><td>semantic encoder stem</td><td class="num">(B, 32, 128, 128)</td><td class="dim">1→16→32, D=32 feature depth</td></tr>
+          <tr><td>4× SE-ResNet block</td><td class="num">(B, 32, 128, 128)</td><td class="dim">refines features, shape unchanged</td></tr>
+          <tr><td>channel encoder</td><td class="num">(B, 8, 128, 128)</td><td class="dim">32→16→8, compression bottleneck</td></tr>
+          <tr><td>[channel]</td><td class="num">(B, 8, 128, 128)</td><td class="dim">identity here — noise arrives in stage 03</td></tr>
+          <tr><td>channel decoder → semantic decoder</td><td class="num">(B, 1, 128, 128)</td><td class="dim">mirrors the encoder path, separate weights</td></tr>
+        </table>
+      </div>
+
+      <h3 class="sub">The SE-ResNet block</h3>
+      <p>
+        Each block computes <code>x + s · t</code>: a grouped convolution (cardinality 4, ResNeXt-style)
+        produces <code>t</code>; a squeeze-excite branch — global-average-pool → 32→8→32 bottleneck →
+        sigmoid — produces a per-channel gate <code>s ∈ [0,1]³²</code>, recomputed fresh on every forward
+        pass from the actual input (that's the "attention": data-dependent, not a static learned weight).
+        The gated result is added back to the input as a residual.
+      </p>
+
+      <div class="callout">
+        <span class="label">Two checks that had to pass first</span>
+        Overfitting 4 clips for 1,200 epochs drove loss from 0.160 → 0.00017 — confirms the architecture
+        can memorize before trusting it to generalize. Then, on a proper split, reconstruction cleared the
+        <strong>SDR &gt; 20 dB</strong> "near-lossless" bar with a ~24.5 dB mean.
+      </div>
+
+      <h3 class="sub">Do the SE gates track anything real?</h3>
+      <p>
+        Zeroed the top-6 highest-gated channels vs. the bottom-6 lowest-gated channels and compared
+        reconstruction damage: zeroing the <em>important-looking</em> channels hurt more
+        (<span class="mono">11.3 dB</span>) than zeroing the ones the gate had already suppressed
+        (<span class="mono">13.0 dB</span>). The gate isn't decorative — it's pointing at channels the
+        network actually relies on.
+      </p>
+    </section>
+
+    <!-- ================= STAGE 03 ================= -->
+    <section class="stage" id="stage-03">
+      <div class="stage-kicker">
+        <span class="stage-num">03</span>
+        <span class="stage-file">03_awgn_power_norm.ipynb</span>
+      </div>
+      <h2>Adding noise — and why power has to be pinned first</h2>
+      <p class="dek">SNR is only a meaningful number if signal power is fixed. Otherwise "10 dB" means something different every run.</p>
+
+      <h3 class="sub">Power normalization</h3>
+      <p>
+        Before the channel, every batch of transmitted symbols is rescaled so
+        <span class="mono">mean|x<sub>k</sub>|² = 1.0</span> — dividing by <code>sqrt(measured_power)</code>,
+        not the power itself, since power scales as amplitude². Two reasons this matters: real
+        transmitters have a fixed energy budget, and SNR (signal power / noise power) is only comparable
+        run-to-run if the numerator isn't drifting with random init and training step.
+      </p>
+
+      <h3 class="sub">SNR sets the noise, not the signal</h3>
+      <p>
+        Signal power stays fixed at 1.0. What changes with SNR is noise std:
+        <span class="mono">σ = √(10<sup>-SNR/10</sup> / 2)</span>.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <tr><th>SNR</th><th>σ (noise std)</th></tr>
+          <tr><td class="num">0 dB</td><td class="num">0.7071</td></tr>
+          <tr><td class="num">6 dB</td><td class="num">0.3544</td></tr>
+          <tr><td class="num">12 dB</td><td class="num">0.1776</td></tr>
+          <tr><td class="num">18 dB</td><td class="num">0.0890</td></tr>
+        </table>
+      </div>
+
+      <h3 class="sub">Training across a random SNR, every step</h3>
+      <pre><code>for epoch in range(1500):
+    channel.snr_db = random.uniform(0, 20)   # fresh SNR every step
+    x_hat = model(x, channel=channel)
+    loss = MSELoss(x_hat, x)
+    loss.backward()   # gradients flow through the noise op itself
+    opt.step()</code></pre>
+      <p>
+        Sampling a new SNR every step — instead of fixing one — is data augmentation for noise level: it
+        forces one encoding that's robust across the whole range, not tuned to a single point.
+        <code>torch.randn</code> is differentiable, so gradients flow encoder ← channel ← decoder; the
+        network learns to be robust to noise, not just to compress.
+      </p>
+
+      <div class="callout">
+        <span class="label">Listening at a fixed 0 dB</span>
+        High-frequency detail — consonants, sibilants, anything low-energy and transient — washes out
+        first. Low-frequency voiced/vowel content survives longest, simply because it dominates total
+        signal power and MSE loss protects power, not fine detail.
+      </div>
+    </section>
+
+    <!-- ================= STAGE 04 ================= -->
+    <section class="stage" id="stage-04">
+      <div class="stage-kicker">
+        <span class="stage-num">04</span>
+        <span class="stage-file">04_fading_cross_channel.ipynb</span>
+      </div>
+      <h2>Fading: when the channel multiplies, not just adds</h2>
+      <p class="dek">And the headline question — does a model trained for one channel survive a different one it never saw?</p>
+
+      <p>
+        AWGN only adds noise: <span class="mono">y = x + w</span>. Real wireless channels also
+        <strong>fade</strong> — multipath propagation makes the channel gain itself a random complex
+        number: <span class="mono">y = h·x + w</span>.
+      </p>
+
+      <div class="const-row" id="constRow">
+        <div class="const-card">
+          <canvas width="150" height="150" data-spread="0.06" data-color="var(--awgn)"></canvas>
+          <span>AWGN — no fading</span>
+        </div>
+        <div class="const-card">
+          <canvas width="150" height="150" data-spread="0.55" data-color="var(--rician)"></canvas>
+          <span>Rician — LoS + scatter</span>
+        </div>
+        <div class="const-card">
+          <canvas width="150" height="150" data-spread="1.0" data-color="var(--rayleigh)"></canvas>
+          <span>Rayleigh — scatter only</span>
+        </div>
+      </div>
+
+      <ul>
+        <li><strong>Rayleigh</strong> — no line-of-sight path, <span class="mono">h ~ CN(0,1)</span>, pure scattering. Models dense-urban or indoor non-line-of-sight: deep fades are common.</li>
+        <li><strong>Rician</strong> — a line-of-sight path plus scatter, weighted by K-factor (LoS power / scattered power). <span class="mono">K→∞</span> recovers AWGN; <span class="mono">K=0</span> recovers Rayleigh.</li>
+        <li><strong>Perfect-CSI equalization</strong> — the receiver is assumed to know <span class="mono">h</span> exactly and divides it out (<span class="mono">x̂ = y/h</span>) before decoding, isolating fading's noise-amplification effect from the harder, out-of-scope problem of estimating <span class="mono">h</span> itself.</li>
+      </ul>
+
+      <h3 class="sub">Train once, test on every channel</h3>
+      <p>
+        Two models, same architecture, each trained on one channel only (1,500 epochs, toy data, random
+        SNR 0–20 dB) — then every model evaluated against all three channel types, no retraining.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <tr><th>trained on</th><th>tested on</th><th>SDR @ 0 dB</th><th>SDR @ 20 dB</th></tr>
+          <tr><td>awgn</td><td>awgn</td><td class="num">13.0 dB</td><td class="num">19.6 dB</td></tr>
+          <tr><td>awgn</td><td>rayleigh</td><td class="num">4.5 dB</td><td class="num">18.0 dB</td></tr>
+          <tr><td>awgn</td><td>rician</td><td class="num">5.8 dB</td><td class="num">18.4 dB</td></tr>
+          <tr><td>rayleigh</td><td>awgn</td><td class="num">14.9 dB</td><td class="num">19.6 dB</td></tr>
+          <tr><td>rayleigh</td><td>rayleigh</td><td class="num">8.0 dB</td><td class="num">17.5 dB</td></tr>
+          <tr><td>rayleigh</td><td>rician</td><td class="num">9.4 dB</td><td class="num">17.6 dB</td></tr>
+        </table>
+      </div>
+      <p>
+        Two things worth remembering here. First, the gap between matched and mismatched channels is
+        largest at low SNR and nearly closes by 20 dB — noise dominates less, so the fading mismatch
+        matters less. Second, and less obvious: the model <strong>trained on Rayleigh generalizes to
+        AWGN better than the reverse</strong>. Training on the harder channel produces a more robust
+        encoding than training on the easy one and hoping it transfers.
+      </p>
+    </section>
+
+    <!-- ================= STAGE 05 ================= -->
+    <section class="stage" id="stage-05">
+      <div class="stage-kicker">
+        <span class="stage-num">05</span>
+        <span class="stage-file">05_results_sdr_pesq.ipynb</span>
+      </div>
+      <h2>The headline result, on real speech</h2>
+      <p class="dek">Same robustness question as stage 04 — now on the Edinburgh DataShare set, with a perceptual metric added.</p>
+
+      <p>
+        Trained on a 2,000-clip subset of the 28-speaker clean set (of ~10k available — a deliberate,
+        documented scope choice for a tractable single session, not a shortcut hiding a limitation),
+        40 epochs, AWGN only, then evaluated across all three channel types.
+      </p>
+
+      <figure>
+        <svg viewBox="0 0 640 300" role="img" aria-labelledby="sdrChartTitle" style="width:100%;height:auto;">
+          <title id="sdrChartTitle">SDR in decibels versus SNR in decibels, three lines for AWGN, Rician and Rayleigh channels, all rising from left to right and converging at high SNR.</title>
+          <g font-family="ui-monospace, SF Mono, Menlo, Consolas, monospace" font-size="10.5" fill="var(--ink-faint)">
+            <!-- gridlines -->
+            <line x1="50" y1="270" x2="610" y2="270" stroke="var(--rule)"></line>
+            <line x1="50" y1="207.5" x2="610" y2="207.5" stroke="var(--rule)" stroke-dasharray="2 3"></line>
+            <line x1="50" y1="145" x2="610" y2="145" stroke="var(--rule)" stroke-dasharray="2 3"></line>
+            <line x1="50" y1="82.5" x2="610" y2="82.5" stroke="var(--rule)" stroke-dasharray="2 3"></line>
+            <line x1="50" y1="20" x2="610" y2="20" stroke="var(--rule)" stroke-dasharray="2 3"></line>
+            <text x="42" y="273" text-anchor="end">0</text>
+            <text x="42" y="210.5" text-anchor="end">3</text>
+            <text x="42" y="148" text-anchor="end">6</text>
+            <text x="42" y="85.5" text-anchor="end">9</text>
+            <text x="42" y="23" text-anchor="end">12</text>
+            <text x="8" y="150" transform="rotate(-90 8 150)" text-anchor="middle">SDR (dB)</text>
+            <!-- x axis -->
+            <line x1="50" y1="270" x2="50" y2="276" stroke="var(--ink-faint)"></line>
+            <text x="50" y="290" text-anchor="middle">0</text>
+            <text x="162" y="290" text-anchor="middle">4</text>
+            <text x="274" y="290" text-anchor="middle">8</text>
+            <text x="386" y="290" text-anchor="middle">12</text>
+            <text x="498" y="290" text-anchor="middle">16</text>
+            <text x="610" y="290" text-anchor="middle">20</text>
+            <text x="330" y="300" text-anchor="middle">SNR (dB)</text>
+          </g>
+          <!-- awgn -->
+          <polyline points="50,113.8 162,84.6 274,66.9 386,58.5 498,54.4 610,51.3" fill="none" stroke="var(--awgn)" stroke-width="2.25"></polyline>
+          <!-- rician -->
+          <polyline points="50,203.3 162,156.5 274,117.9 386,85.6 498,70 610,61.7" fill="none" stroke="var(--rician)" stroke-width="2.25"></polyline>
+          <!-- rayleigh -->
+          <polyline points="50,213.8 162,166.9 274,126.3 386,95 498,76.3 610,63.8" fill="none" stroke="var(--rayleigh)" stroke-width="2.25"></polyline>
+          <g>
+            <circle cx="610" cy="51.3" r="3.5" fill="var(--awgn)"></circle>
+            <circle cx="610" cy="61.7" r="3.5" fill="var(--rician)"></circle>
+            <circle cx="610" cy="63.8" r="3.5" fill="var(--rayleigh)"></circle>
+          </g>
+        </svg>
+        <figcaption>
+          Stage 05, real Edinburgh DataShare data. One AWGN-trained model, evaluated on all three channels.
+        </figcaption>
+      </figure>
+      <div class="legend">
+        <span><span class="swatch" style="background:var(--awgn)"></span>awgn — 7.5 → 10.5 dB</span>
+        <span><span class="swatch" style="background:var(--rician)"></span>rician — 3.2 → 10.0 dB</span>
+        <span><span class="swatch" style="background:var(--rayleigh)"></span>rayleigh — 2.7 → 9.9 dB</span>
+      </div>
+
+      <p>
+        Same shape as the toy-data result in stage 04, but now with real absolute numbers: a ~4–5 dB gap
+        between matched and mismatched channels at 0 dB SNR, narrowing to under 1 dB by 20 dB SNR.
+      </p>
+
+      <h3 class="sub">PESQ — a metric SDR can't give you</h3>
+      <p>
+        SDR is a pure signal-energy ratio; it can't tell you what actually sounds bad to a human ear.
+        <strong>PESQ</strong> (Perceptual Evaluation of Speech Quality, scale 1.0 worst – 4.5 best) is
+        the industry-standard perceptual metric for speech codecs, wired in as an optional dependency
+        that degrades gracefully to an SDR-only plot if the <code>pesq</code> package isn't installed.
+        Here it tracked the same channel ordering as SDR (awgn best, rayleigh/rician trailing) but stayed
+        low in absolute terms, ~1.0–1.35 — the expected signature of a model trained on a 2k-clip subset
+        for 40 epochs rather than the paper's full-scale run, not a bug.
+      </p>
+
+      <h3 class="sub">Two small engineering notes</h3>
+      <ul>
+        <li>Checkpoints are saved every <span class="mono">N_EPOCHS/4</span> epochs during training to build a "quality over time" gallery — the same held-out clip decoded with progressively later weights.</li>
+        <li>A later revision made training skip itself entirely if <code>checkpoints/deepsc_s_awgn_final.pt</code> already exists — no reason to burn a real-data training run again just because the notebook restarted.</li>
+      </ul>
+    </section>
+
+    <section class="block" id="takeaways">
+      <h2>What actually generalizes from this</h2>
+      <p class="dek">Not the numbers — the shape of the argument.</p>
+      <div class="takeaway-grid">
+        <div class="takeaway-card">
+          <h4>Prove mechanisms, not pipelines</h4>
+          <p>Each stage isolates one new variable — reshape, then noise, then fading, then real data — so a failure is never ambiguous about its cause.</p>
+        </div>
+        <div class="takeaway-card">
+          <h4>Architecture follows data structure</h4>
+          <p>The row-major reshape exists specifically so a 2-D CNN's local receptive field means something; the SE gate is validated, not assumed, by an ablation.</p>
+        </div>
+        <div class="takeaway-card">
+          <h4>Physical-layer intuition is half the system</h4>
+          <p>Power normalization, the SNR/noise-std relationship, and the additive-vs-multiplicative distinction between AWGN and fading matter as much as the network design.</p>
+        </div>
+        <div class="takeaway-card">
+          <h4>Robustness is measurable, and asymmetric</h4>
+          <p>Training on the harder channel (Rayleigh) generalizes to the easier one (AWGN) better than the reverse — a concrete, testable claim, confirmed on both toy and real data.</p>
+        </div>
+        <div class="takeaway-card">
+          <h4>Toy data first is a discipline, not a shortcut</h4>
+          <p>Every stage runs and verifies on cheap synthetic data before real data is required — a broken stage 5 is never explained away by "maybe it's the download."</p>
+        </div>
+        <div class="takeaway-card">
+          <h4>Two metrics tell different stories</h4>
+          <p>SDR and PESQ agreed on channel ordering but not on how good "good" actually sounds — a reminder that a signal-energy metric and a perceptual one aren't interchangeable.</p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<footer>
+  <div class="shell" style="grid-template-columns: 1fr; gap:0;">
+    <div>
+      <div class="foot-links">
+        <a href="https://github.com/prashantrajbista/semantic-communication" target="_blank" rel="noopener">Source repository</a>
+        <a href="https://arxiv.org/abs/2012.05369" target="_blank" rel="noopener">DeepSC-S paper</a>
+        <a href="https://github.com/Zhenzi-Weng/DeepSC-S" target="_blank" rel="noopener">Reference TensorFlow implementation</a>
+        <a href="https://datashare.ed.ac.uk/handle/10283/2791" target="_blank" rel="noopener">Edinburgh DataShare dataset</a>
+      </div>
+      <p class="fine">Reproduction and notes by Prashant Raj Bista. Scope: neural transceiver, AWGN + Rayleigh + Rician, SDR/PESQ, perfect-CSI equalization. Not in scope: traditional PCM+Turbo/64-QAM baseline, exact numeric paper reproduction, estimated-CSI channels.</p>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // active TOC highlight on scroll
+  (function () {
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+    var sections = links
+      .map(function (a) { return document.querySelector(a.getAttribute('href')); })
+      .filter(Boolean);
+    if (!sections.length || !('IntersectionObserver' in window)) return;
+    var map = new Map();
+    sections.forEach(function (s, i) { map.set(s, links[i]); });
+    var observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        var link = map.get(entry.target);
+        if (!link) return;
+        if (entry.isIntersecting) {
+          links.forEach(function (l) { l.classList.remove('active'); });
+          link.classList.add('active');
+        }
+      });
+    }, { rootMargin: '-15% 0px -70% 0px', threshold: 0 });
+    sections.forEach(function (s) { observer.observe(s); });
+  })();
+
+  // constellation motif — deterministic scatter, tight -> scattered
+  (function () {
+    function lcg(seed) {
+      var s = seed;
+      return function () { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+    }
+    document.querySelectorAll('.const-card canvas').forEach(function (canvas, idx) {
+      var ctx = canvas.getContext('2d');
+      var w = canvas.width, h = canvas.height;
+      var spread = parseFloat(canvas.dataset.spread);
+      var color = getComputedStyle(document.documentElement)
+        .getPropertyValue(canvas.dataset.color.replace('var(', '').replace(')', ''))
+        .trim() || '#888';
+      var rand = lcg(1000 + idx * 37);
+      ctx.clearRect(0, 0, w, h);
+      var cx = w / 2, cy = h / 2;
+      // faint crosshair
+      ctx.strokeStyle = 'rgba(128,128,128,0.25)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cx, 8); ctx.lineTo(cx, h - 8); ctx.moveTo(8, cy); ctx.lineTo(w - 8, cy); ctx.stroke();
+      ctx.fillStyle = color;
+      var n = 90;
+      for (var i = 0; i < n; i++) {
+        var u1 = rand(), u2 = rand();
+        var r = Math.sqrt(-2 * Math.log(u1 + 1e-9));
+        var theta = 2 * Math.PI * u2;
+        var gx = r * Math.cos(theta), gy = r * Math.sin(theta);
+        var px = cx + gx * spread * (w * 0.16);
+        var py = cy + gy * spread * (h * 0.16);
+        if (px < 4 || px > w - 4 || py < 4 || py > h - 4) continue;
+        ctx.globalAlpha = 0.75;
+        ctx.beginPath();
+        ctx.arc(px, py, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    });
+  })();
+</script>
+
+</body>
+</html>
