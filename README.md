@@ -3,6 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](.python-version)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.13-ee4c2c.svg)](pyproject.toml)
+[![Model on HF](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-checkpoints-yellow)](https://huggingface.co/prashantrajbista/deepsc-s)
 
 A working PyTorch reproduction of **DeepSC-S** (Weng, Qin & Li, 2021 —
 [arXiv:2012.05369](https://arxiv.org/abs/2012.05369)), the semantic communication
@@ -11,6 +12,9 @@ script — every intermediate stage is visible, inspectable, and explained.
 
 **[Read the staged write-up →](https://prashantrajbista.github.io/semantic-communication/)**
 — what was learned at each of the five stages, with results.
+
+**[Pretrained checkpoints on Hugging Face →](https://huggingface.co/prashantrajbista/deepsc-s)**
+— awgn/rayleigh/rician final weights, ready to load.
 
 See [`docs/initial_plan.md`](docs/initial_plan.md) for the full design rationale,
 open questions, and staged plan this repo implements.
@@ -72,7 +76,10 @@ downloading for paper-comparable numbers.
 ## Training script
 
 `scripts/train.py` downloads the real dataset (if not already present under `data/`),
-trains `DeepSC_S`, saves checkpoints to `checkpoints/`, and logs to Weights & Biases:
+trains `DeepSC_S`, saves checkpoints to `checkpoints/`, and logs to Weights & Biases.
+Final weights for all three channels are also published on
+[Hugging Face](https://huggingface.co/prashantrajbista/deepsc-s) if you just want to load
+a trained model without running this:
 
 ```bash
 uv run python scripts/train.py --epochs 40 --channel awgn
