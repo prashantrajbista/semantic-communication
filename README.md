@@ -1,9 +1,16 @@
 # DeepSC-S Reproduction — Learning-First Plan
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](.python-version)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.13-ee4c2c.svg)](pyproject.toml)
+
 A working PyTorch reproduction of **DeepSC-S** (Weng, Qin & Li, 2021 —
 [arXiv:2012.05369](https://arxiv.org/abs/2012.05369)), the semantic communication
 system for speech. Built as an interactive lab notebook, not a train-and-print-a-number
 script — every intermediate stage is visible, inspectable, and explained.
+
+**[Read the staged write-up →](https://prashantrajbista.github.io/semantic-communication/)**
+— what was learned at each of the five stages, with results.
 
 See [`docs/initial_plan.md`](docs/initial_plan.md) for the full design rationale,
 open questions, and staged plan this repo implements.
@@ -95,3 +102,7 @@ over the paper's SGD, Rician K=1 default.
 
 **Out:** traditional PCM+Turbo/64-QAM baseline, exact numeric paper reproduction, real
 RF hardware, estimated-CSI channels, full 10k-clip training.
+
+## License
+
+[MIT](LICENSE)
