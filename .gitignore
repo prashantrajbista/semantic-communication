@@ -20,3 +20,6 @@ docs/
 # secrets
 .env
 wandb/
+
+# reproduction outputs (checkpoints + figures + logs)
+/results/
