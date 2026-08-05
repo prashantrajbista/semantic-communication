@@ -1,13 +1,20 @@
 """Download the Edinburgh DataShare speech set (if missing), train DeepSC-S, save
 checkpoints, and log to Weights & Biases.
 
+Defaults are the authors' own TensorFlow reference (Zhenzi-Weng/DeepSC-S `main.py`):
+RMSprop at lr 5e-4, MSE on the waveform, a single fixed 8 dB training SNR, batch 32,
+1000 epochs, and the full ~10k-clip training set. The paper text says SGD at lr 0.001
+instead; the repo is what produced the published numbers. Every deviation has to be
+asked for on the command line.
+
 W&B key resolution: reads WANDB_API_KEY from a `.env` file in the project root if
 present, else from the environment. If neither is set, training continues without
 logging in (W&B run goes into disabled/offline mode instead of prompting/failing).
 
-Usage:
-    uv run python scripts/train.py --epochs 40 --channel awgn
-    uv run python scripts/train.py --epochs 40 --channel rayleigh --subset-size 2000
+Usage (the E0 reference set — three channels x three seeds):
+    for ch in awgn rayleigh rician; do for s in 0 1 2; do
+        uv run python scripts/train.py --channel $ch --seed $s
+    done; done
 """
 from __future__ import annotations
 
@@ -27,7 +34,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from deepscs.audio import F, L, W
-from deepscs.channel import ChannelLayer
+from deepscs.channel import ChannelLayer, bandwidth_ratio
 from deepscs.data import SpeechDataset, ToyDataset
 from deepscs.model import DeepSC_S
 
@@ -181,17 +188,21 @@ def main():
                    help="dataset source: Edinburgh DataShare zip (default), or HF hub mirror "
                         "(JacobLinCool/VoiceBank-DEMAND-16k) which avoids cloud-IP 403s")
     p.add_argument("--checkpoint-dir", default=str(ROOT / "checkpoints"))
-    p.add_argument("--subset-size", type=int, default=2000)
-    p.add_argument("--epochs", type=int, default=40)
-    p.add_argument("--batch-size", type=int, default=8)
-    p.add_argument("--lr", type=float, default=1e-3)
-    p.add_argument("--depth", type=int, default=8, help="channel-encoder output depth (compression knob)")
-    p.add_argument("--n-blocks", type=int, default=4)
-    p.add_argument("--channel", choices=["awgn", "rayleigh", "rician"], default="awgn")
+    p.add_argument("--subset-size", type=int, default=0, help="0 = the paper's full training set")
+    p.add_argument("--epochs", type=int, default=1000, help="repo default")
+    p.add_argument("--batch-size", type=int, default=32, help="repo default")
+    p.add_argument("--lr", type=float, default=5e-4, help="repo: 5e-4 (paper text says 0.001)")
+    p.add_argument("--optimizer", choices=["rmsprop", "sgd", "adam"], default="rmsprop",
+                   help="repo: RMSprop (paper text says SGD)")
+    p.add_argument("--momentum", type=float, default=0.0, help="SGD only")
+    p.add_argument("--chan-filters", type=int, default=128,
+                   help="channel encoder/decoder width; rho = filters/32")
+    p.add_argument("--n-blocks", type=int, default=5, help="SE-ResNet modules per side")
+    p.add_argument("--channel", choices=["awgn", "rayleigh", "rician"], default="rician")
     p.add_argument("--rician-k", type=float, default=1.0)
-    p.add_argument("--snr-low", type=float, default=0.0)
-    p.add_argument("--snr-high", type=float, default=20.0)
-    p.add_argument("--checkpoint-every", type=int, default=5)
+    p.add_argument("--snr-low", type=float, default=8.0, help="paper trains at a fixed 8 dB")
+    p.add_argument("--snr-high", type=float, default=8.0, help="raise above --snr-low to randomize (E3)")
+    p.add_argument("--checkpoint-every", type=int, default=10)
     p.add_argument("--project", default="deepsc-s")
     p.add_argument("--run-name", default=None)
     p.add_argument("--seed", type=int, default=0)
@@ -216,21 +227,31 @@ def main():
     train_dir, test_dir = ensure_dataset(Path(args.data_dir), args.train_zip, args.test_zip, args.source)
     if train_dir is not None:
         full_train = SpeechDataset(train_dir, train=True, seed=args.seed)
-        rng = np.random.default_rng(args.seed)
-        idx = rng.choice(len(full_train), size=min(args.subset_size, len(full_train)), replace=False)
-        train_ds = torch.utils.data.Subset(full_train, idx.tolist())
+        if args.subset_size and args.subset_size < len(full_train):
+            rng = np.random.default_rng(args.seed)
+            idx = rng.choice(len(full_train), size=args.subset_size, replace=False)
+            train_ds = torch.utils.data.Subset(full_train, idx.tolist())
+        else:
+            train_ds = full_train
         test_ds = SpeechDataset(test_dir, train=False, seed=args.seed + 1) if test_dir.exists() else None
     else:
-        train_ds = ToyDataset(n=min(args.subset_size, 64), length=W, seed=args.seed)
+        train_ds = ToyDataset(n=min(args.subset_size or 64, 64), length=W, seed=args.seed)
         test_ds = ToyDataset(n=8, length=W, seed=args.seed + 1)
 
-    print(f"train clips: {len(train_ds)}")
+    print(f"train clips: {len(train_ds)}  |  "
+          f"rho = {bandwidth_ratio(args.chan_filters)} channel uses/sample")
     loader = torch.utils.data.DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True)
 
-    model = DeepSC_S(depth=args.depth, n_blocks=args.n_blocks).to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    model = DeepSC_S(filters=args.chan_filters, n_blocks=args.n_blocks).to(device)
+    if args.optimizer == "rmsprop":
+        opt = torch.optim.RMSprop(model.parameters(), lr=args.lr)
+    elif args.optimizer == "sgd":
+        opt = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+    else:
+        opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     loss_fn = nn.MSELoss()
     channel = build_channel(args.channel, args.snr_low, args.rician_k)
+    fixed_snr = args.snr_high <= args.snr_low
 
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -240,7 +261,8 @@ def main():
         running = 0.0
         for batch in loader:
             batch = batch.to(device).view(-1, 1, F, L)
-            channel.snr_db = float(np.random.uniform(args.snr_low, args.snr_high))
+            if not fixed_snr:
+                channel.snr_db = float(np.random.uniform(args.snr_low, args.snr_high))
             opt.zero_grad()
             x_hat = model(batch, channel=channel)
             loss = loss_fn(x_hat, batch)
@@ -252,10 +274,12 @@ def main():
         wandb.log({"epoch": epoch, "train_loss": epoch_loss})
 
         if epoch % args.checkpoint_every == 0 or epoch == args.epochs - 1:
-            ckpt_path = ckpt_dir / f"deepsc_s_{args.channel}_epoch{epoch}.pt"
+            ckpt_path = ckpt_dir / f"deepsc_s_{args.channel}_s{args.seed}_epoch{epoch}.pt"
             torch.save(model.state_dict(), ckpt_path)
 
-    final_path = ckpt_dir / f"deepsc_s_{args.channel}_final.pt"
+    # seed is in the name so a 3-seed sweep doesn't overwrite itself (plan section 4:
+    # report variance, some gaps in this literature are inside seed noise)
+    final_path = ckpt_dir / f"deepsc_s_{args.channel}_s{args.seed}_final.pt"
     torch.save(model.state_dict(), final_path)
     print(f"saved final weights to {final_path}")
 

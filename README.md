@@ -1,56 +1,86 @@
-# DeepSC-S Reproduction — Learning-First Plan
+# DeepSC-S — Faithful Reproduction (E0)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](.python-version)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.13-ee4c2c.svg)](pyproject.toml)
 [![Model on HF](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-checkpoints-yellow)](https://huggingface.co/prashantrajbista/deepsc-s)
 
-A working PyTorch reproduction of **DeepSC-S** (Weng, Qin & Li, 2021 —
-[arXiv:2012.05369](https://arxiv.org/abs/2012.05369)), the semantic communication
-system for speech. Built as an interactive lab notebook, not a train-and-print-a-number
-script — every intermediate stage is visible, inspectable, and explained.
+A PyTorch reproduction of **DeepSC-S** (Weng, Qin & Li — [arXiv:2012.05369](https://arxiv.org/abs/2012.05369)),
+built to reproduce the paper's numbers rather than its qualitative story: the neural
+transceiver **and** the traditional PCM + turbo + 64-QAM benchmark it is compared against,
+at a matched bandwidth ratio, over the paper's three channels.
+
+This is stage **E0** of [`docs/assumption_stripping.md`](docs/assumption_stripping.md) —
+the faithful baseline everything downstream inherits from.
 
 **[Read the staged write-up →](https://prashantrajbista.github.io/semantic-communication/)**
-— what was learned at each of the five stages, with results.
+· **[Pretrained checkpoints →](https://huggingface.co/prashantrajbista/deepsc-s)**
 
-**[Pretrained checkpoints on Hugging Face →](https://huggingface.co/prashantrajbista/deepsc-s)**
-— awgn/rayleigh/rician final weights, ready to load.
+> The write-up page and the published checkpoints predate this branch — they document an
+> earlier, structurally different model. **Those checkpoints will not load here**; the
+> figure scripts skip them with a message. Retrain with the commands below.
+
+## Ground truth: the repo, not the paper table
+
+The authors' own TensorFlow code ([Zhenzi-Weng/DeepSC-S](https://github.com/Zhenzi-Weng/DeepSC-S))
+disagrees with the paper's own configuration table on several counts. This
+implementation follows the **code**, because that is what produced the published numbers:
+
+| | Paper text | Official repo (used here) |
+|---|---|---|
+| Encoder front-end | not stated | 2 × 5×5 conv, **stride 2** → 4× downsample in both dims (32 then 128 filters) |
+| SE-ResNet modules | 4 | **5** per side |
+| SE-ResNet width | 32 kernels | out_dim **128**; 4 branches × 128 filters, 1×1 transition, r = 4 |
+| Channel encoder | 1 CNN, 8 kernels, ReLU | 1 conv + BN, **128** filters, **no activation** |
+| Channel decoder | 1 CNN, 8 kernels | 1 conv + BN, 128 filters, + ReLU |
+| Decoder tail | not stated | 2 × stride-2 **transposed** conv (128, 32) + ReLU |
+| Output layer | 1 CNN, 1 kernel, no activation | 1×1 conv to 1 channel, no activation ✔ agrees |
+| Waveform | not stated | per-example mean/var normalize in, denormalize out |
+| Optimizer | SGD | **RMSprop** |
+| Learning rate | 0.001 | **5e-4** |
+| Epochs / batch | not stated | 1000 / 32 |
+| Training SNR | fixed 8 dB | fixed 8 dB ✔ agrees |
+| Fading `h` | not stated | **one draw per row, held across 512 symbols** (block fading), Rician K = 1 |
+
+Flags exist for the paper-text readings (`--optimizer sgd --lr 1e-3 --n-blocks 4
+--chan-filters 8`), but the authors never trained that configuration.
+
+## The bandwidth ratio ρ
+
+Every comparison in the paper is void unless both systems spend the same number of
+channel symbols per source sample. The paper says 64-QAM was picked "to make the number
+of transmitted symbols in the traditional systems the same as that in DeepSC-S" but never
+states the value, so it is derived here and asserted in code
+(`deepscs.baseline.assert_matched_rho`):
+
+| | |
+|---|---|
+| DeepSC-S | `(B,1,128,128)` → 4× downsample → `(B,128,32,32)` → 128 rows × 512 complex symbols = 65536 per 16384 samples → **ρ = filters / (2·4²) = 4** |
+| Benchmark | 16384 × 8 bit A-law = 131072 bits → turbo 1/3 = 393216 bits → 64-QAM at 6 bit/symbol = 65536 symbols → **ρ = 4** |
+
+The two stride-2 convs shrink the feature map 16× while the channel width grows 1 → 128,
+so the symbol budget is unchanged. Both figure scripts print ρ and refuse to run if the
+two ever diverge. Note this is a 4× bandwidth *expansion*, not compression — worth stating
+plainly, since it is easy to read DeepSC-S as a compression result.
+
+## Fading is block, not per-symbol
+
+The repo draws `h` with shape `[B, C, 1]` and broadcasts it over all 512 symbols in that
+row. Drawing it i.i.d. per symbol instead hands both systems full diversity the paper
+never had — and it flatters the benchmark enormously: with per-symbol fading the turbo
+chain clears Rayleigh at ~12 dB, with block fading a single deep fade destroys a whole
+codeword and it stalls around 10 dB SDR. The block model is what `deepscs/channel.py`
+implements, for both systems.
 
 ## Setup
 
 ```bash
 pyenv install 3.11.9   # already pinned via .python-version
 uv sync                # installs deps from pyproject.toml/uv.lock into .venv
-uv run jupyter lab     # open notebooks/
 ```
 
-CPU is enough for stages 1-4 (toy synthetic data, small models). Stage 5 wants a real
-speech dataset and benefits from a GPU/longer wall-clock (see below).
-
-## Layout
-
-- `deepscs/` — reusable, tested logic (no narrative): `audio.py` (framing/SDR),
-  `blocks.py` (SE-ResNet), `model.py` (SemanticEncoder/Decoder + ChannelEnc/Dec +
-  `DeepSC_S`), `channel.py` (AWGN/Rayleigh/Rician + power norm), `viz.py` (shared
-  plots), `data.py` (toy generator + real dataset loader).
-- `notebooks/` — the 5-stage narrative, in order:
-  1. `01_audio_framing.ipynb` — load/resample/frame/deframe, lossless round trip.
-  2. `02_autoencoder_no_channel.ipynb` — SemanticEncoder/Decoder trained with the
-     channel disabled; SE attention visualization.
-  3. `03_awgn_power_norm.ipynb` — power constraint + AWGN channel; SDR vs SNR.
-  4. `04_fading_cross_channel.ipynb` — Rayleigh/Rician fading; one model tested
-     across channels without retraining.
-  5. `05_results_sdr_pesq.ipynb` — real-data training, SDR/PESQ curves, robustness
-     table. Falls back to toy data automatically if the real dataset isn't present.
-
-Every notebook is self-contained and has been executed end-to-end (outputs saved
-in-place) — run cells top to bottom to reproduce.
-
-## Real dataset (stage 5 only)
-
-[Edinburgh DataShare 10283/2791](https://datashare.ed.ac.uk/handle/10283/2791)
-(Valentini 2016). Use the **clean** sets — DeepSC-S transmits/reconstructs speech, it
-doesn't denoise:
+Data (several GB — the paper's set, Edinburgh DataShare 10283/2791, Valentini 2016; use
+the **clean** sets, DeepSC-S transmits speech, it does not denoise):
 
 ```bash
 mkdir -p data && cd data
@@ -61,93 +91,120 @@ curl -L -o clean_testset_wav.zip \
 unzip clean_trainset_28spk_wav.zip && unzip clean_testset_wav.zip
 ```
 
-(DataShare's older `/bitstream/handle/<id>/<name>.zip` URLs no longer serve the file
-directly — these bitstream-UUID URLs are the current working ones, found via the
-[handle page](https://datashare.ed.ac.uk/handle/10283/2791)'s download links.)
+`scripts/train.py` will fetch this itself if `data/` is empty, and falls back to a toy
+synthetic set if the download fails (curve shapes hold; absolute values are not
+paper-comparable without the real set). On cloud IPs DataShare's WAF tends to 403 —
+pass `--source hf` to pull the same audio from a Hugging Face mirror instead.
 
-Several GB — not downloaded automatically by any notebook (`scripts/train.py` does
-download it automatically, falling back to toy data if the download fails). Without
-it, stage 5 still runs (and verifies) on the toy synthetic dataset; rerun after
-downloading for paper-comparable numbers.
+## Reproducing the paper
 
-## Training script
+### 1. Train the reference checkpoint set
 
-`scripts/train.py` downloads the real dataset (if not already present under `data/`),
-trains `DeepSC_S`, saves checkpoints to `checkpoints/`, and logs to Weights & Biases.
-Final weights for all three channels are also published on
-[Hugging Face](https://huggingface.co/prashantrajbista/deepsc-s) if you just want to load
-a trained model without running this:
+Defaults are the repo's: RMSprop at lr 5e-4, MSE on the waveform, **fixed 8 dB training
+SNR**, batch 32, 1000 epochs, full ~10k-clip training set. Three channels × three seeds:
 
 ```bash
-uv run python scripts/train.py --epochs 40 --channel awgn
+for ch in awgn rayleigh rician; do
+  for s in 0 1 2; do
+    uv run python scripts/train.py --channel $ch --seed $s
+  done
+done
 ```
 
-W&B key resolution: put `WANDB_API_KEY=...` in a `.env` file in the project root (not
-committed — see `.gitignore`), or export it in the environment. If neither is set,
-training continues without logging in — W&B runs in disabled mode instead of
-prompting or failing.
+Writes `checkpoints/deepsc_s_{channel}_s{seed}_final.pt`. The model is ~18.6M parameters
+and needs a GPU — MPS is not usable (its autograd breaks on the channel layer's
+`torch.complex` ops), so this is CUDA or a very long CPU wait.
 
-Key flags: `--channel {awgn,rayleigh,rician}`, `--subset-size`, `--epochs`,
-`--batch-size`, `--lr`, `--depth` (compression knob), `--snr-low`/`--snr-high`.
-Run `uv run python scripts/train.py --help` for the full list.
-
-## Figure reproduction
-
-`scripts/fig04_mse_vs_snr.py` reproduces the paper's **Fig. 4** (MSE loss vs SNR, one
-panel per *testing* channel, one curve per *training* channel). It loads the three
-`deepsc_s_{awgn,rayleigh,rician}_final.pt` checkpoints, sweeps each over all three
-channels, and prints the numbers alongside the plot:
+### 2. Figure 4 — MSE vs SNR, train channel × test channel
 
 ```bash
 uv run python scripts/fig04_mse_vs_snr.py
 ```
 
-Flags: `--checkpoint-dir`, `--data-dir`, `--out` (PNG path), `--n-clips`, `--repeats`
-(noise realizations averaged per point), `--snr-min`/`--snr-max`/`--snr-step`,
-`--rician-k`, `--depth`, `--n-blocks`, `--seed`.
+### 3. Figures 5 and 6 — SDR and PESQ vs SNR, DeepSC-S vs the benchmark
 
-Every model sees identical noise draws at a given (channel, SNR, repeat), so gaps
-between curves are model differences rather than noise luck. Uses the real test set
-when `data/clean_testset_wav` exists, else falls back to toy clips.
+```bash
+uv run python scripts/fig05_sdr_pesq.py
+```
 
-## Key design choices
+Neural curves are the mean across seeds, shaded min-to-max. `--no-baseline` skips the
+turbo chain when you only want the neural half (much faster); `--n-clips` and
+`--turbo-iters` trade accuracy for wall-clock.
 
-### What the paper underspecifies
+**Success criterion for E0:** within ~1 dB SDR / ~0.2 PESQ of the published figures. If
+you can't get there, stop and resolve it — every later experiment inherits the
+discrepancy.
 
-The official [TensorFlow repo](https://github.com/Zhenzi-Weng/DeepSC-S) was used as
-ground truth wherever the paper leaves a value open:
+## The traditional benchmark
+
+`deepscs/baseline.py` implements the paper's comparison system end to end. Nothing in it
+is learned, so there is no baseline training step:
+
+| Stage | Implementation |
+|---|---|
+| Source coding | 8-bit A-law PCM, exact ITU-T G.711 segment codec, vectorized in numpy |
+| Channel coding | Turbo rate 1/3 — two LTE constituent RSCs (feedback `1 + D² + D³`, parity `1 + D + D³`, 8 states), random interleaver, max-log-MAP BCJR, 6 iterations |
+| Modulation | 64-QAM, Gray-labelled, unit average power, max-log soft demapping |
+| Channel | `deepscs.channel`'s own layers — the *same* code path the neural system uses |
+
+Two details worth knowing:
+
+- **Fading LLRs are scaled by 1/\|h\|².** Perfect-CSI equalization `x̂ = y/h` amplifies
+  noise as well as signal; feeding that per-symbol variance into the demapper is what
+  keeps the benchmark from being quietly handicapped under Rayleigh/Rician.
+- **No trellis termination.** Beta is initialized uniformly instead of at the zero state.
+  Costs a fraction of a dB at each block tail and keeps the rate at exactly 1/3 — which
+  is what makes ρ match the neural system exactly. Marked in the source.
+
+The turbo decoder is vectorized over the block axis (256 blocks of 512 bits per clip), so
+a clip decodes in about a second. An off-the-shelf pure-Python BCJR is roughly three
+orders of magnitude slower and was not usable here.
+
+Self-check — cross-validates A-law against the stdlib G.711 codec bit for bit, confirms
+zero BER at 25 dB, and asserts matched ρ:
+
+```bash
+uv run python -m deepscs.baseline
+```
+
+## Layout
+
+- `deepscs/` — logic, no narrative:
+  `audio.py` (framing, SDR, PESQ), `blocks.py` (SE-ResNet), `model.py` (DeepSC-S),
+  `channel.py` (AWGN/Rayleigh/Rician, power norm, ρ), `baseline.py` (G.711 + turbo +
+  64-QAM), `evaluate.py` (shared sweep harness), `data.py`, `viz.py`.
+- `scripts/` — `train.py`, `fig04_mse_vs_snr.py`, `fig05_sdr_pesq.py`.
+- `notebooks/` — the five-stage learning narrative that built this up
+  (framing → autoencoder → AWGN → fading → results). Explanatory, not the reproduction
+  path; use the scripts above for that.
+
+## Choices neither the paper nor the repo pins down
 
 | Item | Choice | Note |
 | --- | --- | --- |
-| SE-ResNet kernel / padding | 5x5, stride 1, `same` | Paper's "4x32" is cardinality x filter count, not kernel size |
-| SE reduction ratio `r` | 4 | Small feature depth, so keep `r` low |
-| Feature depth `D` | 32 | From the paper's "4x32" |
-| Channel width `N` | channel-encoder output depth 8 (compression knob, `--depth`) | `N = L*(depth/2)` complex symbols per frame row |
-| Real to complex reshape | flatten `(L, depth)` per frame, view as I/Q pairs, then power-norm | Matches the repo |
-| Clips not exactly W=16384 | random crop while training, non-overlapping tile + reassemble at eval, zero-pad if short | — |
-| Rician K-factor | 1.0 (`--rician-k`) | Paper does not state it |
-| CSI | perfect-CSI equalization `x_hat = y/h` | Matches the repo |
+| Clips ≠ W = 16384 | random crop while training; non-overlapping tile + reassemble at eval; zero-pad if short | Repo pre-slices into TFRecords instead |
+| Rician K-factor | 1.0 (`--rician-k`) | Matches the repo's hardcoded value; its LoS sits at 45°, which perfect-CSI equalization makes irrelevant |
+| AWGN / Rayleigh variants | same layer, K → ∞ and K = 0 | Repo only ships the Rician case; the paper reports all three |
+| Multi-branch SE-ResNet split | one conv to `cardinality × branch_filters` | Exactly equal to 4 concatenated full convs — BN is per-channel, ReLU elementwise |
+| Turbo interleaver, block length | random permutation, 512 bits | Paper says "turbo, rate 1/3" and nothing more |
+| Turbo iterations | 6 (`--turbo-iters`) | — |
+| Trellis termination | none, uniform β init | Keeps the rate at exactly 1/3, which is what makes ρ match |
+| PCM law | A-law (vs μ-law) | Paper says "PCM"; A-law is the ITU-T G.711 default outside North America |
+| PESQ mode | narrowband (P.862) | Correct for 8 kHz |
+| SGD momentum | 0.0 (`--momentum`) | Only used if you switch off RMSprop |
 
-### Deliberate deviations
-
-| Item | Paper | Here | Why |
-| --- | --- | --- | --- |
-| Optimizer | SGD, lr 1e-3 | Adam, lr 1e-3 | Far faster at this scale; flip via `--lr` / a one-line swap |
-| Training SNR | fixed 8 dB | uniform 0-20 dB, re-sampled every step (`--snr-low`/`--snr-high`) | Augmentation: forces an encoding robust across the range instead of one noise level |
-| Training set | full ~10k clips | ~2k-clip subset (`--subset-size`) | Tractable in a single GPU session |
-
-The training-SNR deviation is visible in the Fig. 4 reproduction: curves still cross in
-the order the paper reports, but the crossover sits near 11-12 dB instead of the paper's
-~8 dB, because the models were not specialized to a single training SNR. Run
-`--snr-low 8 --snr-high 8` to train the paper's regime.
+Deviating is one flag each — `--optimizer adam` trains faster at small scale,
+`--snr-low 0 --snr-high 20` randomizes the training SNR (that is experiment E3, not E0),
+`--subset-size 2000` shrinks the training set.
 
 ## Scope
 
-**In:** neural transceiver, end-to-end MSE training, AWGN + Rayleigh + Rician, SDR
-(+ PESQ if installed), rich intermediate visualization.
+**In:** the neural transceiver, the full traditional benchmark, AWGN + Rayleigh + Rician,
+SDR + PESQ, matched ρ, multi-seed.
 
-**Out:** traditional PCM+Turbo/64-QAM baseline, exact numeric paper reproduction, real
-RF hardware, estimated-CSI channels, full 10k-clip training.
+**Out:** everything after E0 in [`docs/assumption_stripping.md`](docs/assumption_stripping.md)
+— estimated CSI, digital/constellation-constrained transmitters, hardened channel models,
+out-of-distribution content, modern baselines (Opus/EVS/LDPC).
 
 ## License
 

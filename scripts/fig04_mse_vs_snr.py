@@ -25,67 +25,48 @@ import torch.nn.functional as func
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from deepscs.audio import F, L, W, crop_or_pad
-from deepscs.channel import ChannelLayer
-from deepscs.data import SpeechDataset, ToyDataset
-from deepscs.model import DeepSC_S
+from deepscs.audio import F, L
+from deepscs.channel import ChannelLayer, bandwidth_ratio
+from deepscs.evaluate import KINDS, load_clips, load_seeds
 
 ROOT = Path(__file__).resolve().parent.parent
-KINDS = ["awgn", "rayleigh", "rician"]
 # same channel colors as index.html / the rest of the write-up
 COLORS = {"awgn": "#2f6fed", "rayleigh": "#b8672a", "rician": "#23886b"}
 
 
-def load_clips(data_dir: Path, n_clips: int, seed: int) -> torch.Tensor:
-    """(n, 1, F, L) tensor of test clips — real speech if downloaded, else toy."""
-    test_dir = data_dir / "clean_testset_wav"
-    if test_dir.exists() and any(test_dir.glob("*.wav")):
-        ds = SpeechDataset(test_dir, train=False, seed=seed)
-        print(f"test set: {test_dir} ({len(ds)} clips, using {min(n_clips, len(ds))})")
-    else:
-        ds = ToyDataset(n=n_clips, length=W, seed=seed)
-        print(f"no real test set under {test_dir} — falling back to toy synthetic clips")
-    clips = []
-    for i in range(min(n_clips, len(ds))):
-        c = ds[i]
-        c = c.numpy() if torch.is_tensor(c) else c
-        clips.append(crop_or_pad(c, W))
-    return torch.from_numpy(np.stack(clips)).view(-1, 1, F, L)
-
-
-def load_models(ckpt_dir: Path, depth: int, n_blocks: int, device) -> dict[str, DeepSC_S]:
+def load_models(ckpt_dir: Path, filters: int, n_blocks: int, device) -> dict[str, list]:
+    """{train channel: [one model per seed]}."""
     models = {}
     for kind in KINDS:
-        path = ckpt_dir / f"deepsc_s_{kind}_final.pt"
-        if not path.exists():
-            print(f"missing {path} — skipping the train={kind} curve "
+        seeds = load_seeds(ckpt_dir, kind, filters, n_blocks, device)
+        if not seeds:
+            print(f"no checkpoint for {kind} — skipping that curve "
                   f"(train it with: uv run python scripts/train.py --channel {kind})")
             continue
-        m = DeepSC_S(depth=depth, n_blocks=n_blocks).to(device)
-        m.load_state_dict(torch.load(path, map_location=device))
-        m.eval()
-        models[kind] = m
+        models[kind] = seeds
     if not models:
         raise SystemExit(f"no checkpoints found in {ckpt_dir}")
     return models
 
 
 def sweep(models, x, snrs, repeats, rician_k, seed, device):
-    """{(train_kind, test_kind): [mse per snr]}. Every model sees identical noise draws
-    at a given (test channel, SNR, repeat), so the curves are directly comparable."""
+    """{(train_kind, test_kind): [mse per snr]}, averaged over seeds. Every model sees
+    identical noise draws at a given (test channel, SNR, repeat), so the curves are
+    directly comparable."""
     out = {}
     for test_kind in KINDS:
-        ch = ChannelLayer(test_kind, snr_db=snrs[0], rician_k=rician_k)
-        for train_kind, model in models.items():
+        ch = ChannelLayer(test_kind, snr_db=float(snrs[0]), rician_k=rician_k)
+        for train_kind, seed_models in models.items():
             mses = []
             for i, snr in enumerate(snrs):
                 ch.snr_db = float(snr)
                 acc = 0.0
                 for r in range(repeats):
-                    torch.manual_seed(seed + 1000 * i + r)
-                    with torch.no_grad():
-                        acc += func.mse_loss(model(x, channel=ch), x).item()
-                mses.append(acc / repeats)
+                    for model in seed_models:
+                        torch.manual_seed(seed + 1000 * i + r)
+                        with torch.no_grad():
+                            acc += func.mse_loss(model(x, channel=ch), x).item()
+                mses.append(acc / (repeats * len(seed_models)))
             out[(train_kind, test_kind)] = mses
     return out
 
@@ -101,16 +82,18 @@ def main():
     p.add_argument("--snr-max", type=float, default=18.0)
     p.add_argument("--snr-step", type=float, default=3.0)
     p.add_argument("--rician-k", type=float, default=1.0)
-    p.add_argument("--depth", type=int, default=8)
-    p.add_argument("--n-blocks", type=int, default=4)
+    p.add_argument("--chan-filters", type=int, default=128)
+    p.add_argument("--n-blocks", type=int, default=5)
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     snrs = np.arange(args.snr_min, args.snr_max + 1e-9, args.snr_step)
+    print(f"rho = {bandwidth_ratio(args.chan_filters)} complex channel uses per source sample")
 
-    x = load_clips(Path(args.data_dir), args.n_clips, args.seed + 1).to(device)
-    models = load_models(Path(args.checkpoint_dir), args.depth, args.n_blocks, device)
+    clips = load_clips(Path(args.data_dir), args.n_clips, args.seed + 1)
+    x = torch.from_numpy(clips).view(-1, 1, F, L).to(device)
+    models = load_models(Path(args.checkpoint_dir), args.chan_filters, args.n_blocks, device)
     results = sweep(models, x, snrs, args.repeats, args.rician_k, args.seed, device)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), sharey=True)
