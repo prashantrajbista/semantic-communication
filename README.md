@@ -16,9 +16,6 @@ script — every intermediate stage is visible, inspectable, and explained.
 **[Pretrained checkpoints on Hugging Face →](https://huggingface.co/prashantrajbista/deepsc-s)**
 — awgn/rayleigh/rician final weights, ready to load.
 
-See [`docs/initial_plan.md`](docs/initial_plan.md) for the full design rationale,
-open questions, and staged plan this repo implements.
-
 ## Setup
 
 ```bash
@@ -94,13 +91,55 @@ Key flags: `--channel {awgn,rayleigh,rician}`, `--subset-size`, `--epochs`,
 `--batch-size`, `--lr`, `--depth` (compression knob), `--snr-low`/`--snr-high`.
 Run `uv run python scripts/train.py --help` for the full list.
 
+## Figure reproduction
+
+`scripts/fig04_mse_vs_snr.py` reproduces the paper's **Fig. 4** (MSE loss vs SNR, one
+panel per *testing* channel, one curve per *training* channel). It loads the three
+`deepsc_s_{awgn,rayleigh,rician}_final.pt` checkpoints, sweeps each over all three
+channels, and prints the numbers alongside the plot:
+
+```bash
+uv run python scripts/fig04_mse_vs_snr.py
+```
+
+Flags: `--checkpoint-dir`, `--data-dir`, `--out` (PNG path), `--n-clips`, `--repeats`
+(noise realizations averaged per point), `--snr-min`/`--snr-max`/`--snr-step`,
+`--rician-k`, `--depth`, `--n-blocks`, `--seed`.
+
+Every model sees identical noise draws at a given (channel, SNR, repeat), so gaps
+between curves are model differences rather than noise luck. Uses the real test set
+when `data/clean_testset_wav` exists, else falls back to toy clips.
+
 ## Key design choices
 
-Flagged as **CHOICE** throughout `docs/initial_plan.md` where the paper underspecifies
-something and the official [TensorFlow repo](https://github.com/Zhenzi-Weng/DeepSC-S)
-was used as ground truth instead: 5x5 SE-ResNet kernels, SE reduction ratio r=4,
-feature depth D=32, channel-encoder output depth (compression knob) default 8, Adam
-over the paper's SGD, Rician K=1 default.
+### What the paper underspecifies
+
+The official [TensorFlow repo](https://github.com/Zhenzi-Weng/DeepSC-S) was used as
+ground truth wherever the paper leaves a value open:
+
+| Item | Choice | Note |
+| --- | --- | --- |
+| SE-ResNet kernel / padding | 5x5, stride 1, `same` | Paper's "4x32" is cardinality x filter count, not kernel size |
+| SE reduction ratio `r` | 4 | Small feature depth, so keep `r` low |
+| Feature depth `D` | 32 | From the paper's "4x32" |
+| Channel width `N` | channel-encoder output depth 8 (compression knob, `--depth`) | `N = L*(depth/2)` complex symbols per frame row |
+| Real to complex reshape | flatten `(L, depth)` per frame, view as I/Q pairs, then power-norm | Matches the repo |
+| Clips not exactly W=16384 | random crop while training, non-overlapping tile + reassemble at eval, zero-pad if short | — |
+| Rician K-factor | 1.0 (`--rician-k`) | Paper does not state it |
+| CSI | perfect-CSI equalization `x_hat = y/h` | Matches the repo |
+
+### Deliberate deviations
+
+| Item | Paper | Here | Why |
+| --- | --- | --- | --- |
+| Optimizer | SGD, lr 1e-3 | Adam, lr 1e-3 | Far faster at this scale; flip via `--lr` / a one-line swap |
+| Training SNR | fixed 8 dB | uniform 0-20 dB, re-sampled every step (`--snr-low`/`--snr-high`) | Augmentation: forces an encoding robust across the range instead of one noise level |
+| Training set | full ~10k clips | ~2k-clip subset (`--subset-size`) | Tractable in a single GPU session |
+
+The training-SNR deviation is visible in the Fig. 4 reproduction: curves still cross in
+the order the paper reports, but the crossover sits near 11-12 dB instead of the paper's
+~8 dB, because the models were not specialized to a single training SNR. Run
+`--snr-low 8 --snr-high 8` to train the paper's regime.
 
 ## Scope
 
