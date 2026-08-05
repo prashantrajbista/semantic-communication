@@ -14,6 +14,14 @@
 #   RESULTS_DIR=./results             output root
 #   N_CLIPS=16                        test clips per figure point
 #   TRAIN_ARGS / FIG04_ARGS / FIG05_ARGS   extra flags passed through
+#   SKIP_FIGURES=1                    train only, render nothing
+#   SKIP_TRAIN=1                      render only, from checkpoints already present
+#
+# A single run uses ~8 GB and does not saturate a big GPU, so fan training out and
+# render once at the end (all invocations share RESULTS_DIR; the skip logic keeps
+# them from colliding):
+#   for ch in awgn rayleigh rician; do SKIP_FIGURES=1 CHANNELS=$ch ./run_all.sh & done
+#   wait && SKIP_TRAIN=1 ./run_all.sh
 #
 # Smoke test the plumbing before committing days of GPU time:
 #   EPOCHS=1 SEEDS=0 N_CLIPS=2 ./run_all.sh
@@ -48,7 +56,9 @@ echo
 
 # ------------------------------------------------------------------ 1. train
 # scripts/train.py fetches the dataset itself on the first run.
+if [ -n "${SKIP_TRAIN:-}" ]; then echo "SKIP_TRAIN set — using existing checkpoints"; fi
 for ch in "${CHANNELS[@]}"; do
+    [ -n "${SKIP_TRAIN:-}" ] && break
     for s in "${SEEDS[@]}"; do
         final="$CKPT/deepsc_s_${ch}_s${s}_final.pt"
         if [ -f "$final" ]; then
@@ -71,6 +81,12 @@ if [ ! -d "$ROOT/data/clean_testset_wav" ]; then
 fi
 
 # ------------------------------------------------------------------ 2. figures
+if [ -n "${SKIP_FIGURES:-}" ]; then
+    echo
+    echo "SKIP_FIGURES set — training done, no figures rendered."
+    exit 0
+fi
+
 echo
 echo "== Fig. 4 (MSE vs SNR)  -> $LOGS/fig04.log"
 "${PY[@]}" scripts/fig04_mse_vs_snr.py \
