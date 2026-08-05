@@ -206,7 +206,8 @@ def main():
     p.add_argument("--num-workers", type=int, default=min(8, os.cpu_count() or 1),
                    help="dataloader workers; loading+resampling costs ~1.1 ms/clip")
     p.add_argument("--amp", action="store_true",
-                   help="bfloat16 autocast + channels_last, roughly 2x on Ada/Ampere/Hopper. "
+                   help="bfloat16 autocast + channels_last, roughly 2x on Ampere/Ada/Hopper "
+                        "(A100, L4, H100). Not usable on Turing (T4), which has no bf16. "
                         "The channel layer stays fp32 either way. Deviates from the "
                         "reference, which trains in fp32.")
     p.add_argument("--project", default="deepsc-s")
@@ -252,8 +253,15 @@ def main():
         pin_memory=device.type == "cuda")
 
     model = DeepSC_S(filters=args.chan_filters, n_blocks=args.n_blocks).to(device)
+    # Turing (T4) has no bfloat16, so fall back to fp16 — which, unlike bf16, has too
+    # little exponent range to survive backward without loss scaling.
+    bf16_ok = device.type == "cuda" and torch.cuda.is_bf16_supported()
+    amp_dtype = torch.bfloat16 if bf16_ok else torch.float16
+    scaler = torch.amp.GradScaler(device.type, enabled=args.amp and amp_dtype is torch.float16)
     if args.amp:
         model = model.to(memory_format=torch.channels_last)
+        print(f"amp: {str(amp_dtype).split('.')[-1]}"
+              f"{' + GradScaler' if scaler.is_enabled() else ''}, channels_last")
     if args.optimizer == "rmsprop":
         # Keras RMSprop defaults are rho=0.9 / epsilon=1e-7; PyTorch's are alpha=0.99 /
         # eps=1e-8, a noticeably different averaging window.
