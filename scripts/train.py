@@ -253,15 +253,12 @@ def main():
         pin_memory=device.type == "cuda")
 
     model = DeepSC_S(filters=args.chan_filters, n_blocks=args.n_blocks).to(device)
-    # Turing (T4) has no bfloat16, so fall back to fp16 — which, unlike bf16, has too
-    # little exponent range to survive backward without loss scaling.
-    bf16_ok = device.type == "cuda" and torch.cuda.is_bf16_supported()
-    amp_dtype = torch.bfloat16 if bf16_ok else torch.float16
-    scaler = torch.amp.GradScaler(device.type, enabled=args.amp and amp_dtype is torch.float16)
     if args.amp:
+        # bf16 only: no GradScaler needed, and Turing (T4) simply cannot run this path.
+        assert device.type != "cuda" or torch.cuda.is_bf16_supported(), \
+            "--amp needs bfloat16 (Ampere or newer); this GPU has none. Drop --amp."
         model = model.to(memory_format=torch.channels_last)
-        print(f"amp: {str(amp_dtype).split('.')[-1]}"
-              f"{' + GradScaler' if scaler.is_enabled() else ''}, channels_last")
+        print("amp: bfloat16 + channels_last")
     if args.optimizer == "rmsprop":
         # Keras RMSprop defaults are rho=0.9 / epsilon=1e-7; PyTorch's are alpha=0.99 /
         # eps=1e-8, a noticeably different averaging window.
