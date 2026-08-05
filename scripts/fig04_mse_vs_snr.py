@@ -26,7 +26,7 @@ import torch.nn.functional as func
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from deepscs.audio import F, L
-from deepscs.channel import ChannelLayer, bandwidth_ratio
+from deepscs.channel import ChannelLayer, assert_unit_power, bandwidth_ratio
 from deepscs.evaluate import KINDS, load_clips, load_seeds
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -90,6 +90,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     snrs = np.arange(args.snr_min, args.snr_max + 1e-9, args.snr_step)
     print(f"rho = {bandwidth_ratio(args.chan_filters)} complex channel uses per source sample")
+    print(f"measured transmit power E|x|^2 = {assert_unit_power(args.chan_filters):.4f}")
 
     clips = load_clips(Path(args.data_dir), args.n_clips, args.seed + 1)
     x = torch.from_numpy(clips).view(-1, 1, F, L).to(device)

@@ -7,12 +7,17 @@
 # Resumable — a run whose final checkpoint already exists is skipped, so an interrupted
 # run picks up where it left off. Delete results/checkpoints to force a retrain.
 #
+# Exits non-zero if the E0 criterion fails, so this is usable as a check and not only as
+# a renderer. That verdict needs the published Fig. 5/6 values in docs/paper_reference.csv;
+# with that file empty the script says "not signed off" and still exits 0.
+#
 # Overridable by environment variable:
 #   CHANNELS="awgn rayleigh rician"   which channels to train
 #   SEEDS="0 1 2"                     seeds per channel
-#   EPOCHS=1000                       training epochs (repo default)
+#   EPOCHS=100                       training epochs (repo default)
 #   RESULTS_DIR=./results             output root
-#   N_CLIPS=16                        test clips per figure point
+#   N_CLIPS=16                        test clips per figure point; use 128 to sign off E0
+#   AMP=1                             bf16 autocast, ~2x on Ampere or newer (A100/L4/H100)
 #   TRAIN_ARGS / FIG04_ARGS / FIG05_ARGS   extra flags passed through
 #   SKIP_FIGURES=1                    train only, render nothing
 #   SKIP_TRAIN=1                      render only, from checkpoints already present
@@ -20,8 +25,8 @@
 # A single run uses ~8 GB and does not saturate a big GPU, so fan training out and
 # render once at the end (all invocations share RESULTS_DIR; the skip logic keeps
 # them from colliding):
-#   for ch in awgn rayleigh rician; do SKIP_FIGURES=1 CHANNELS=$ch ./run_all.sh & done
-#   wait && SKIP_TRAIN=1 ./run_all.sh
+#   for ch in awgn rayleigh rician; do SKIP_FIGURES=1 AMP=1 CHANNELS=$ch ./run_all.sh & done
+#   wait && SKIP_TRAIN=1 N_CLIPS=128 ./run_all.sh
 #
 # Smoke test the plumbing before committing days of GPU time:
 #   EPOCHS=1 SEEDS=0 N_CLIPS=2 ./run_all.sh
@@ -35,7 +40,7 @@ LOGS="$RESULTS/logs"
 
 read -r -a CHANNELS <<< "${CHANNELS:-awgn rayleigh rician}"
 read -r -a SEEDS <<< "${SEEDS:-0 1 2}"
-EPOCHS="${EPOCHS:-1000}"
+EPOCHS="${EPOCHS:-100}"
 N_CLIPS="${N_CLIPS:-16}"
 
 if command -v uv >/dev/null 2>&1; then
@@ -68,7 +73,7 @@ for ch in "${CHANNELS[@]}"; do
         echo "== train $ch seed $s  -> $LOGS/train_${ch}_s${s}.log"
         "${PY[@]}" scripts/train.py \
             --channel "$ch" --seed "$s" --epochs "$EPOCHS" \
-            --checkpoint-dir "$CKPT" ${TRAIN_ARGS:-} 2>&1 | tee "$LOGS/train_${ch}_s${s}.log"
+            --checkpoint-dir "$CKPT" ${AMP:+--amp} ${TRAIN_ARGS:-} 2>&1 | tee "$LOGS/train_${ch}_s${s}.log"
     done
 done
 
@@ -105,3 +110,21 @@ echo "done. figures:"
 ls -1 "$FIGS"
 echo
 echo "numeric tables are at the end of $LOGS/fig04.log and $LOGS/fig05_06.log"
+
+# E0 stands or falls on the gap to the published figures, so make that the exit status
+# instead of a line buried in a log nobody reads.
+echo
+case "$(grep -o 'E0: \(PASS\|FAIL\)' "$LOGS/fig05_06.log" | tail -1 || true)" in
+    "E0: PASS")
+        echo "E0: PASS — within 1 dB SDR / 0.2 PESQ of the published figures."
+        ;;
+    "E0: FAIL")
+        echo "E0: FAIL — per-curve gaps are in $LOGS/fig05_06.log. Resolve before E1;"
+        echo "     everything downstream inherits the discrepancy."
+        exit 1
+        ;;
+    *)
+        echo "E0: not signed off — docs/paper_reference.csv holds no published values yet."
+        echo "     Read Figs. 5 and 6 off arXiv:2012.05369 into it, then: SKIP_TRAIN=1 ./run_all.sh"
+        ;;
+esac

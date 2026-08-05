@@ -57,6 +57,16 @@ def measured_power(x: torch.Tensor) -> float:
     return x.abs().pow(2).mean().item()
 
 
+def assert_unit_power(filters: int = 128, h: int = 32, w: int = 32) -> float:
+    """Measure E|x|^2 on the real transmit path instead of trusting `power_norm` by
+    reading it (assumption_stripping.md section 4: a normalization bug is free SNR and is
+    the easiest way to invalidate every comparison). Cheap enough to run once per figure."""
+    p = power_norm(to_pairs(torch.randn(4, filters, h, w)))
+    pw = measured_power(torch.complex(p[..., 0], p[..., 1]))
+    assert abs(pw - 1.0) < 1e-3, f"power normalization broken: E|x|^2 = {pw:.4f}, want 1.0"
+    return pw
+
+
 def snr_db_to_sigma(snr_db: float) -> float:
     """Per-real-dim noise std given unit signal power: sigma^2 = 1/(2*10^(SNR/10))."""
     return (10 ** (-snr_db / 10) / 2) ** 0.5

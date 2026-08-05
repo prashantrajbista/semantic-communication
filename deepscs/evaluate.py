@@ -7,6 +7,7 @@ comparable at all.
 """
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,73 @@ from .data import SpeechDataset, ToyDataset
 from .model import DeepSC_S
 
 KINDS = ["awgn", "rayleigh", "rician"]
+
+# E0 success criterion (assumption_stripping.md section 2): reproduction curves within
+# ~1 dB SDR / ~0.2 PESQ of the published figures.
+E0_TOL = {"SDR": 1.0, "PESQ": 0.2}
+REFERENCE_CSV = Path(__file__).resolve().parent.parent / "docs/paper_reference.csv"
+
+
+def load_reference(path: Path = REFERENCE_CSV) -> dict[tuple[str, str, str], dict[float, float]]:
+    """The paper's own Fig. 5/6 values, keyed (metric, system, channel) -> {snr: value}.
+
+    Read off the published figures by hand — arXiv:2012.05369 plots them and tabulates
+    nothing, so there is no way to fetch them. Rows with a blank value are ignored, so a
+    partly-filled file is usable; an absent file just means no comparison is made."""
+    if not path.exists():
+        return {}
+    out: dict[tuple[str, str, str], dict[float, float]] = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            metric = (row.get("metric") or "").strip()
+            if metric.startswith("#") or not (row.get("value") or "").strip():
+                continue
+            key = (metric.upper(), row["system"].strip(), row["channel"].strip())
+            out.setdefault(key, {})[float(row["snr_db"])] = float(row["value"])
+    return out
+
+
+def e0_verdict(metric: str, system: str, kind: str, snrs, values, reference) -> tuple[float, int]:
+    """(largest |ours - paper| over the SNR points both have, number of points compared).
+    Returns (nan, 0) when the reference has nothing for this curve."""
+    ref = reference.get((metric.upper(), system, kind), {})
+    deltas = [abs(v - ref[float(s)]) for s, v in zip(snrs, values)
+              if float(s) in ref and np.isfinite(v)]
+    return (max(deltas) if deltas else float("nan")), len(deltas)
+
+
+def report_e0(results: dict, snrs, reference, with_pesq: bool = True) -> bool | None:
+    """Print the per-curve gap against the published figures and return the E0 verdict:
+    True/False once there is anything to compare against, None while the reference file is
+    still empty. `results[kind]` is the (n_sdr, n_pesq, b_sdr, b_pesq) tuple fig05 builds."""
+    if not reference:
+        print(f"\nno published values in {REFERENCE_CSV.name} — E0 cannot be signed off. "
+              "Read Figs. 5/6 off the paper and fill it in.")
+        return None
+    print(f"\nE0 check vs the published figures (tolerance "
+          f"{E0_TOL['SDR']:.1f} dB SDR / {E0_TOL['PESQ']:.2f} PESQ)")
+    ok, compared = True, 0
+    for metric, idx in (("SDR", 0), ("PESQ", 1)):
+        if metric == "PESQ" and not with_pesq:
+            continue
+        for kind in KINDS:
+            for system, arr in (("deepsc", results[kind][idx]), ("benchmark", results[kind][idx + 2])):
+                if arr is None:
+                    continue
+                curve = np.nanmean(arr, axis=0) if arr.ndim > 1 else arr
+                gap, n = e0_verdict(metric, system, kind, snrs, curve, reference)
+                if not n:
+                    continue
+                compared += 1
+                passed = bool(gap <= E0_TOL[metric])
+                ok &= passed
+                print(f"  {metric:4s} {system:10s} {kind:9s} max gap {gap:6.3f} over {n} point(s)"
+                      f"  {'ok' if passed else 'OUT OF TOLERANCE'}")
+    if not compared:
+        print("  reference file has no rows matching this SNR grid — nothing compared.")
+        return None
+    print(f"E0: {'PASS' if ok else 'FAIL'}")
+    return ok
 
 
 def load_clips(data_dir: Path, n_clips: int, seed: int = 0) -> np.ndarray:
@@ -109,3 +177,31 @@ def sweep_baseline(clips: np.ndarray, kind: str, snrs, rician_k=1.0, n_iter=6,
         recon = baseline_reconstruct(clips, kind, float(snr), rician_k, n_iter, seed)
         s[j], p[j] = score(clips, recon, with_pesq)
     return s, p
+
+
+def _self_check():
+    """uv run python -m deepscs.evaluate — exercises the E0 comparison without a GPU,
+    a checkpoint or the paper."""
+    snrs = [0.0, 3.0, 6.0]
+    ref = {("SDR", "deepsc", "awgn"): {0.0: 10.0, 3.0: 12.0},
+           ("PESQ", "deepsc", "awgn"): {0.0: 2.0}}
+    gap, n = e0_verdict("SDR", "deepsc", "awgn", snrs, [10.4, 11.3, 99.0], ref)
+    assert (round(gap, 6), n) == (0.7, 2), (gap, n)   # 6 dB has no reference, must not count
+    assert e0_verdict("SDR", "deepsc", "rician", snrs, [1, 2, 3], ref)[1] == 0
+    # a curve with no overlapping SNR points must not be silently counted as passing
+    assert e0_verdict("SDR", "deepsc", "awgn", [99.0], [10.0], ref)[1] == 0
+
+    grid = np.array([[10.4, 11.3, 12.0]])
+    results = {k: (grid, None, None, None) for k in KINDS}
+    assert report_e0(results, snrs, ref, with_pesq=False) is True
+    results["awgn"] = (grid + 2.0, None, None, None)   # 2 dB out on SDR
+    assert report_e0(results, snrs, ref, with_pesq=False) is False
+    assert report_e0(results, snrs, {}, with_pesq=False) is None
+
+    from .channel import assert_unit_power
+    assert_unit_power()
+    print("evaluate self-check ok")
+
+
+if __name__ == "__main__":
+    _self_check()

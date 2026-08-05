@@ -23,10 +23,12 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from deepscs.baseline import assert_matched_rho
-from deepscs.evaluate import KINDS, load_clips, load_seeds, sweep_baseline, sweep_neural
+from deepscs.channel import assert_unit_power
+from deepscs.evaluate import (KINDS, load_clips, load_reference, load_seeds, report_e0,
+                              sweep_baseline, sweep_neural)
 
 ROOT = Path(__file__).resolve().parent.parent
-NEURAL_C, BASE_C = "#2f6fed", "#b8672a"
+NEURAL_C, BASE_C, REF_C = "#2f6fed", "#b8672a", "#6b6b6b"
 
 
 def main():
@@ -49,6 +51,8 @@ def main():
 
     rho = assert_matched_rho(filters=args.chan_filters)
     print(f"matched rho = {rho} complex channel uses per source sample")
+    print(f"measured transmit power E|x|^2 = {assert_unit_power(args.chan_filters):.4f}")
+    reference = load_reference()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     snrs = np.arange(args.snr_min, args.snr_max + 1e-9, args.snr_step)
@@ -88,6 +92,15 @@ def main():
             if base is not None and np.isfinite(base).any():
                 ax.plot(snrs, base, marker="s", markersize=4, color=BASE_C,
                         label="PCM + turbo 1/3 + 64-QAM")
+            # E0's deliverable is the reproduction overlaid on the paper's own curve, so
+            # the gap is visible and not just a number in a table.
+            for system, style in (("deepsc", "--"), ("benchmark", ":")):
+                ref = reference.get((metric, system, kind), {})
+                if ref:
+                    xs = sorted(ref)
+                    ax.plot(xs, [ref[x] for x in xs], style, marker="x", markersize=5,
+                            color=REF_C, lw=1.2,
+                            label=f"paper, {'DeepSC-S' if system == 'deepsc' else 'benchmark'}")
             ax.set_xlabel("SNR (dB)")
             ax.set_title(f"({panel}) {kind} channel")
             ax.grid(alpha=0.25)
@@ -122,6 +135,8 @@ def main():
         m = np.nanmean(n, axis=0)
         assert m[-1] > m[0], f"{kind}: DeepSC-S SDR did not rise with SNR ({m[0]:.2f} -> {m[-1]:.2f})"
     print("\ncheck: DeepSC-S SDR rises with SNR on every channel.")
+
+    report_e0(results, snrs, reference, with_pesq)
 
 
 if __name__ == "__main__":

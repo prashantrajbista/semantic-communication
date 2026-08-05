@@ -131,9 +131,23 @@ Neural curves are the mean across seeds, shaded min-to-max. `--no-baseline` skip
 turbo chain when you only want the neural half (much faster); `--n-clips` and
 `--turbo-iters` trade accuracy for wall-clock.
 
-**Success criterion for E0:** within ~1 dB SDR / ~0.2 PESQ of the published figures. If
-you can't get there, stop and resolve it — every later experiment inherits the
-discrepancy.
+### 4. Sign off E0
+
+**Success criterion:** within ~1 dB SDR / ~0.2 PESQ of the published figures. If you
+can't get there, stop and resolve it — every later experiment inherits the discrepancy.
+
+The paper plots Figs. 5 and 6 and tabulates nothing, so the reference values have to be
+read off the figures by hand into `docs/paper_reference.csv` (one row per point:
+`metric,system,channel,snr_db,value`). Once it has rows, `fig05_sdr_pesq.py` overlays the
+published curve on the reproduction, prints the largest gap per curve, and ends with
+`E0: PASS` or `E0: FAIL`. With the file empty it says so and refuses to claim a verdict.
+
+Both figure scripts also measure `E|x|²` on the transmit path and abort if it is not 1.0
+— a normalization bug is free SNR, and it is the cheapest way to invalidate everything
+downstream.
+
+For the sign-off run use more than the 16-clip default: `--n-clips 128` costs about
+40 minutes, mostly turbo decoding.
 
 ## The traditional benchmark
 
