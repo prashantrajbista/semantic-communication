@@ -189,7 +189,6 @@ uv run python -m deepscs.baseline
 | Turbo interleaver, block length | random permutation, 512 bits | Paper says "turbo, rate 1/3" and nothing more |
 | Turbo iterations | 6 (`--turbo-iters`) | — |
 | Trellis termination | none, uniform β init | Keeps the rate at exactly 1/3, which is what makes ρ match |
-| PCM law | A-law (vs μ-law) | Paper says "PCM"; A-law is the ITU-T G.711 default outside North America |
 | PESQ mode | narrowband (P.862) | Correct for 8 kHz |
 | SGD momentum | 0.0 (`--momentum`) | Only used if you switch off RMSprop |
 
