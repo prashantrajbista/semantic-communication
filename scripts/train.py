@@ -221,6 +221,7 @@ def main():
     # MPS's autograd breaks on the channel layer's torch.complex ops (see docs);
     # CUDA works fine, CPU is the safe fallback.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.backends.cudnn.benchmark = True  # shapes are fixed every step; let cuDNN pick algos once
     print("device:", device)
 
     api_key = load_env_key("WANDB_API_KEY")
