@@ -88,7 +88,9 @@ training continues without logging in — W&B runs in disabled mode instead of
 prompting or failing.
 
 Key flags: `--channel {awgn,rayleigh,rician}`, `--subset-size`, `--epochs`,
-`--batch-size`, `--lr`, `--depth` (compression knob), `--snr-low`/`--snr-high`.
+`--batch-size`, `--lr`, `--depth` (compression knob), `--snr-fixed` (paper's single
+training SNR) or `--snr-random` with `--snr-low`/`--snr-high`. `--fetch-only` downloads
+the dataset and exits without touching a checkpoint.
 Run `uv run python scripts/train.py --help` for the full list.
 
 ## Figure reproduction
@@ -106,9 +108,23 @@ Flags: `--checkpoint-dir`, `--data-dir`, `--out` (PNG path), `--n-clips`, `--rep
 (noise realizations averaged per point), `--snr-min`/`--snr-max`/`--snr-step`,
 `--rician-k`, `--depth`, `--n-blocks`, `--seed`.
 
+`scripts/fig05_sdr_pesq.py` reproduces **Figs. 5 and 6** (SDR and PESQ vs SNR) against
+the paper's traditional benchmark — 8-bit A-law PCM (G.711) + turbo rate 1/3 + 64-QAM,
+implemented in `deepscs/baseline.py`. Both systems run at the same bandwidth ratio
+rho = 4 complex channel uses per source sample, asserted by `assert_matched_rho` before
+anything is measured; an unmatched rho makes every comparison void.
+
+`./run_all.sh` runs the whole E0 ladder — train every channel and seed, render Figs. 4,
+5 and 6, then check the curves against the published values in
+`docs/paper_reference.csv` and **exit non-zero if they are outside 1 dB SDR / 0.2 PESQ**.
+That file ships empty: the paper tabulates nothing, so its Fig. 5/6 values have to be
+read off the plots by hand before E0 can be signed off either way.
+
 Every model sees identical noise draws at a given (channel, SNR, repeat), so gaps
-between curves are model differences rather than noise luck. Uses the real test set
-when `data/clean_testset_wav` exists, else falls back to toy clips.
+between curves are model differences rather than noise luck. The figure scripts refuse
+to run without `data/clean_testset_wav` — toy synthetic clips render plausible curves
+with meaningless numbers, so measuring E0 on them is a hard error unless `--allow-toy`
+is passed for a plumbing smoke test.
 
 ## Key design choices
 
@@ -133,13 +149,18 @@ ground truth wherever the paper leaves a value open:
 | Item | Paper | Here | Why |
 | --- | --- | --- | --- |
 | Optimizer | SGD, lr 1e-3 | Adam, lr 1e-3 | Far faster at this scale; flip via `--lr` / a one-line swap |
-| Training SNR | fixed 8 dB | uniform 0-20 dB, re-sampled every step (`--snr-low`/`--snr-high`) | Augmentation: forces an encoding robust across the range instead of one noise level |
+| Training SNR | fixed 8 dB | fixed 8 dB (`--snr-fixed`) | Matches the paper. `--snr-random` restores the uniform 0-20 dB sweep, but that is E3's regime 2, not a reproduction |
 | Training set | full ~10k clips | ~2k-clip subset (`--subset-size`) | Tractable in a single GPU session |
 
-The training-SNR deviation is visible in the Fig. 4 reproduction: curves still cross in
-the order the paper reports, but the crossover sits near 11-12 dB instead of the paper's
-~8 dB, because the models were not specialized to a single training SNR. Run
-`--snr-low 8 --snr-high 8` to train the paper's regime.
+Earlier runs trained on a uniform 0-20 dB SNR instead, which pushed the Fig. 4 crossover
+to 11-12 dB rather than the paper's ~8 dB — the models were never specialized to one
+noise level. That is now off by default; `--snr-random` brings it back for E3.
+
+The decoder's output head also carried a `Tanh` at one point. The paper's table says the
+output layer has *no activation*, and Tanh saturates on loud frames — capping the very
+metric E0 is judged on. Checkpoints trained with it load without complaint (Tanh has no
+parameters), so `evaluate.load_seeds` deliberately refuses the old un-suffixed
+`deepsc_s_<kind>_final.pt` filenames rather than silently scoring them.
 
 ## Scope
 

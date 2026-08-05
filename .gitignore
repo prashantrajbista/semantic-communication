@@ -14,7 +14,8 @@ wheels/
 /checkpoints/
 
 .ipynb_checkpoints/
-docs/
+docs/*
+!docs/paper_reference.csv
 .claude/
 
 # secrets

@@ -41,10 +41,12 @@ class SemanticDecoder(nn.Module):
         self.se_blocks = nn.ModuleList(
             [SEResNetBlock(D, cardinality, r) for _ in range(n_blocks)]
         )
+        # Paper's Table: the output layer is "1 x CNN module, 1 kernel, no activation".
+        # No Tanh — it saturates on loud frames and silently caps SDR, which is exactly
+        # the metric E0 is judged on.
         self.head = nn.Sequential(
             conv_bn_relu(D, 16),
             nn.Conv2d(16, 1, kernel_size=5, padding=2),
-            nn.Tanh(),  # matches input range [-1, 1]
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

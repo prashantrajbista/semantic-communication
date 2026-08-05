@@ -68,3 +68,16 @@ def sdr(s: np.ndarray, s_hat: np.ndarray) -> float:
     if den == 0:
         return float("inf")
     return 10 * np.log10(num / den)
+
+
+def pesq_score(s: np.ndarray, s_hat: np.ndarray, sr: int = SR) -> float:
+    """ITU-T P.862 narrowband MOS-LQO, the paper's Fig. 6 metric. Returns NaN when P.862
+    refuses the pair (it rejects clips it considers degenerate — all-silence, or a
+    reconstruction so bad its VAD finds no active speech). NaN so the caller can drop the
+    clip instead of averaging in a fabricated number."""
+    from pesq import pesq as _pesq
+
+    try:
+        return float(_pesq(sr, s.astype(np.float32), s_hat.astype(np.float32), "nb"))
+    except Exception:
+        return float("nan")

@@ -41,6 +41,33 @@ def measured_power(x: torch.Tensor) -> float:
     return x.abs().pow(2).mean().item()
 
 
+def bandwidth_ratio(depth: int = 8) -> float:
+    """Complex channel uses per source sample, rho = FN/W — the number E0 turns on.
+
+    Every conv uses `same` padding, so the encoder emits `depth` real values at each of
+    the W = F*L input positions, i.e. depth/2 complex symbols per source sample:
+
+        F rows x K symbols/row = 128 x (L*depth/2) = 128 x 512 = 65536 symbols
+        rho = 65536 / 16384 = 4                                     (at depth = 8)
+
+    which is exactly what 8-bit PCM + turbo 1/3 + 64-QAM costs (see deepscs.baseline).
+    That the paper's stated 8-kernel channel coder lands on the same rho as its stated
+    64-QAM benchmark is the evidence that `depth = 8` is the intended reading of N.
+
+    Report it with every result: a number at an unstated rho is not a result."""
+    assert depth % 2 == 0, "depth must be even (I/Q pairs)"
+    return depth / 2
+
+
+def assert_unit_power(depth: int = 8, f: int = 128, l: int = 128, tol: float = 1e-3) -> float:
+    """Verify E|x|^2 = 1 empirically rather than trusting power_norm (hygiene item in
+    docs/assumption_stripping.md section 4 — a normalization bug is free SNR)."""
+    z = torch.randn(2, depth, f, l) * 7.3 + 2.1   # deliberately not already normalized
+    p = measured_power(power_norm(to_iq(z)))
+    assert abs(p - 1.0) < tol, f"transmit power is {p:.6f}, not 1.0"
+    return p
+
+
 def snr_db_to_sigma(snr_db: float) -> float:
     """Per-complex-dim noise std given unit signal power: sigma^2 = 1/(2*10^(SNR/10))."""
     return (10 ** (-snr_db / 10) / 2) ** 0.5

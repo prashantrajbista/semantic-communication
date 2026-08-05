@@ -25,9 +25,9 @@ import torch.nn.functional as func
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from deepscs.audio import F, L, W, crop_or_pad
-from deepscs.channel import ChannelLayer
-from deepscs.data import SpeechDataset, ToyDataset
+from deepscs.audio import F, L
+from deepscs.channel import ChannelLayer, bandwidth_ratio
+from deepscs.evaluate import load_clips, load_seeds
 from deepscs.model import DeepSC_S
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,35 +36,17 @@ KINDS = ["awgn", "rayleigh", "rician"]
 COLORS = {"awgn": "#2f6fed", "rayleigh": "#b8672a", "rician": "#23886b"}
 
 
-def load_clips(data_dir: Path, n_clips: int, seed: int) -> torch.Tensor:
-    """(n, 1, F, L) tensor of test clips — real speech if downloaded, else toy."""
-    test_dir = data_dir / "clean_testset_wav"
-    if test_dir.exists() and any(test_dir.glob("*.wav")):
-        ds = SpeechDataset(test_dir, train=False, seed=seed)
-        print(f"test set: {test_dir} ({len(ds)} clips, using {min(n_clips, len(ds))})")
-    else:
-        ds = ToyDataset(n=n_clips, length=W, seed=seed)
-        print(f"no real test set under {test_dir} — falling back to toy synthetic clips")
-    clips = []
-    for i in range(min(n_clips, len(ds))):
-        c = ds[i]
-        c = c.numpy() if torch.is_tensor(c) else c
-        clips.append(crop_or_pad(c, W))
-    return torch.from_numpy(np.stack(clips)).view(-1, 1, F, L)
-
-
 def load_models(ckpt_dir: Path, depth: int, n_blocks: int, device) -> dict[str, DeepSC_S]:
+    """One model per training channel. Fig. 4 is a 3x3 train-vs-test grid, not a variance
+    plot, so it takes the first seed of each channel rather than averaging them."""
     models = {}
     for kind in KINDS:
-        path = ckpt_dir / f"deepsc_s_{kind}_final.pt"
-        if not path.exists():
-            print(f"missing {path} — skipping the train={kind} curve "
+        seeds = load_seeds(ckpt_dir, kind, depth, n_blocks, device)
+        if not seeds:
+            print(f"no checkpoint for {kind} in {ckpt_dir} — skipping the train={kind} curve "
                   f"(train it with: uv run python scripts/train.py --channel {kind})")
             continue
-        m = DeepSC_S(depth=depth, n_blocks=n_blocks).to(device)
-        m.load_state_dict(torch.load(path, map_location=device))
-        m.eval()
-        models[kind] = m
+        models[kind] = seeds[0]
     if not models:
         raise SystemExit(f"no checkpoints found in {ckpt_dir}")
     return models
@@ -104,12 +86,16 @@ def main():
     p.add_argument("--depth", type=int, default=8)
     p.add_argument("--n-blocks", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--allow-toy", action="store_true",
+                   help="run on synthetic clips when the real test set is missing (smoke tests only)")
     args = p.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     snrs = np.arange(args.snr_min, args.snr_max + 1e-9, args.snr_step)
 
-    x = load_clips(Path(args.data_dir), args.n_clips, args.seed + 1).to(device)
+    print(f"rho = {bandwidth_ratio(args.depth)} complex channel uses per source sample")
+    clips = load_clips(Path(args.data_dir), args.n_clips, args.seed + 1, args.allow_toy)
+    x = torch.from_numpy(clips).view(-1, 1, F, L).to(device)
     models = load_models(Path(args.checkpoint_dir), args.depth, args.n_blocks, device)
     results = sweep(models, x, snrs, args.repeats, args.rician_k, args.seed, device)
 

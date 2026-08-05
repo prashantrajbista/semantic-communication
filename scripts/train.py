@@ -27,7 +27,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from deepscs.audio import F, L, W
-from deepscs.channel import ChannelLayer
+from deepscs.channel import ChannelLayer, bandwidth_ratio
 from deepscs.data import SpeechDataset, ToyDataset
 from deepscs.model import DeepSC_S
 
@@ -189,13 +189,28 @@ def main():
     p.add_argument("--n-blocks", type=int, default=4)
     p.add_argument("--channel", choices=["awgn", "rayleigh", "rician"], default="awgn")
     p.add_argument("--rician-k", type=float, default=1.0)
+    # The paper trains at ONE operating point (Sec. IV: Rician, 8 dB) and tests across
+    # SNRs. Sampling SNR per batch instead is already half of E3's regime 2 — it makes the
+    # model better than the paper's and the curve not a reproduction. Fixed is the E0
+    # default; --snr-low/--snr-high are kept for when E3 actually wants them.
+    p.add_argument("--snr-fixed", type=float, default=8.0,
+                   help="single training SNR in dB (paper's setting); None-out with --snr-random")
+    p.add_argument("--snr-random", action="store_true",
+                   help="sample SNR per batch over [--snr-low, --snr-high] instead (E3, not E0)")
     p.add_argument("--snr-low", type=float, default=0.0)
     p.add_argument("--snr-high", type=float, default=20.0)
     p.add_argument("--checkpoint-every", type=int, default=5)
     p.add_argument("--project", default="deepsc-s")
     p.add_argument("--run-name", default=None)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--fetch-only", action="store_true",
+                   help="download/extract the dataset and exit, touching no checkpoint")
     args = p.parse_args()
+
+    if args.fetch_only:
+        train_dir, test_dir = ensure_dataset(Path(args.data_dir), args.train_zip,
+                                             args.test_zip, args.source)
+        raise SystemExit(0 if train_dir is not None else "dataset fetch failed")
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -230,7 +245,11 @@ def main():
     model = DeepSC_S(depth=args.depth, n_blocks=args.n_blocks).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     loss_fn = nn.MSELoss()
-    channel = build_channel(args.channel, args.snr_low, args.rician_k)
+    channel = build_channel(args.channel, args.snr_fixed, args.rician_k)
+    print(f"training channel: {args.channel} at "
+          + (f"U({args.snr_low}, {args.snr_high}) dB per batch" if args.snr_random
+             else f"fixed {args.snr_fixed} dB")
+          + f", rho = {bandwidth_ratio(args.depth)} channel uses/sample")
 
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -240,7 +259,8 @@ def main():
         running = 0.0
         for batch in loader:
             batch = batch.to(device).view(-1, 1, F, L)
-            channel.snr_db = float(np.random.uniform(args.snr_low, args.snr_high))
+            if args.snr_random:
+                channel.snr_db = float(np.random.uniform(args.snr_low, args.snr_high))
             opt.zero_grad()
             x_hat = model(batch, channel=channel)
             loss = loss_fn(x_hat, batch)
@@ -252,10 +272,10 @@ def main():
         wandb.log({"epoch": epoch, "train_loss": epoch_loss})
 
         if epoch % args.checkpoint_every == 0 or epoch == args.epochs - 1:
-            ckpt_path = ckpt_dir / f"deepsc_s_{args.channel}_epoch{epoch}.pt"
+            ckpt_path = ckpt_dir / f"deepsc_s_{args.channel}_s{args.seed}_epoch{epoch}.pt"
             torch.save(model.state_dict(), ckpt_path)
 
-    final_path = ckpt_dir / f"deepsc_s_{args.channel}_final.pt"
+    final_path = ckpt_dir / f"deepsc_s_{args.channel}_s{args.seed}_final.pt"
     torch.save(model.state_dict(), final_path)
     print(f"saved final weights to {final_path}")
 

@@ -1,0 +1,9 @@
+metric,system,channel,snr_db,value
+# ^ the paper's own Figs. 5 and 6, read off the plots by hand. arXiv:2012.05369 gives no
+# tables, so nothing here can be fetched — leave a row out rather than guessing at it.
+#   metric  : SDR | PESQ
+#   system  : deepsc | benchmark
+#   channel : awgn | rayleigh | rician
+#   snr_db  : must land on the figure scripts' grid (default 0,3,6,9,12,15,18)
+# Example (delete once real values are in):
+# SDR,deepsc,awgn,0,
