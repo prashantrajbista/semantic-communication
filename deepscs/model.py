@@ -26,7 +26,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .blocks import SEResNetBlock, conv_bn, convtrans_bn
+from .blocks import SEResNetBlock, conv_bn, convtrans_bn, init_keras_default
 
 D = 128           # semantic feature depth (repo: sem_enc_outdims[1:])
 STEM = 32         # first stride-2 conv width (repo: sem_enc_outdims[0])
@@ -109,6 +109,7 @@ class DeepSC_S(nn.Module):
         self.channel_encoder = ChannelEncoder(filters)
         self.channel_decoder = ChannelDecoder(filters)
         self.semantic_decoder = SemanticDecoder(n_blocks, cardinality, r)
+        self.apply(init_keras_default)  # Keras' glorot_uniform, not PyTorch's kaiming
 
     def forward(self, x: torch.Tensor, channel=None):
         """x: (B, 1, F, L). Returns reconstruction (B, 1, F, L) in the input's own scale."""

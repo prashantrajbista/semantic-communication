@@ -19,6 +19,26 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+# Keras BatchNormalization defaults are not PyTorch's: eps 1e-3 vs 1e-5, and Keras
+# `momentum=0.99` is the weight on the *old* running stat, which is PyTorch's
+# `momentum=0.01`. Left at PyTorch defaults the running statistics move ~10x faster
+# than in the reference.
+BN_EPS, BN_MOMENTUM = 1e-3, 0.01
+
+
+def batch_norm(ch: int) -> nn.BatchNorm2d:
+    return nn.BatchNorm2d(ch, eps=BN_EPS, momentum=BN_MOMENTUM)
+
+
+def init_keras_default(module: nn.Module) -> None:
+    """Glorot/Xavier uniform on convs and linears, matching Keras' default initializer.
+    PyTorch defaults to Kaiming uniform with a=sqrt(5), which is a different scale.
+    Apply with `model.apply(init_keras_default)`. Every layer here is bias-free."""
+    if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
+        nn.init.xavier_uniform_(module.weight)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+
 
 class SqueezeExcite(nn.Module):
     """Global-average-pool -> bottleneck FC -> sigmoid gate per channel. Bias-free FCs."""
@@ -48,12 +68,12 @@ class SEResNetBlock(nn.Module):
         wide = cardinality * branch_filters
         self.split = nn.Sequential(
             nn.Conv2d(in_ch, wide, kernel_size, padding=kernel_size // 2, bias=False),
-            nn.BatchNorm2d(wide),
+            batch_norm(wide),
             nn.ReLU(inplace=True),
         )
         self.transition = nn.Sequential(          # 1x1, no activation — repo's transition_layer
             nn.Conv2d(wide, out_dim, 1, bias=False),
-            nn.BatchNorm2d(out_dim),
+            batch_norm(out_dim),
         )
         self.se = SqueezeExcite(out_dim, r)
         self.last_se_weights: torch.Tensor | None = None  # (B, C) — cached for visualization
@@ -70,7 +90,7 @@ def conv_bn(in_ch: int, out_ch: int, kernel_size: int = 5, stride: int = 1) -> n
     because the channel encoder deliberately has none."""
     return nn.Sequential(
         nn.Conv2d(in_ch, out_ch, kernel_size, stride=stride, padding=kernel_size // 2, bias=False),
-        nn.BatchNorm2d(out_ch),
+        batch_norm(out_ch),
     )
 
 
@@ -80,7 +100,7 @@ def convtrans_bn(in_ch: int, out_ch: int, kernel_size: int = 5, stride: int = 2)
     return nn.Sequential(
         nn.ConvTranspose2d(in_ch, out_ch, kernel_size, stride=stride,
                            padding=kernel_size // 2, output_padding=stride - 1, bias=False),
-        nn.BatchNorm2d(out_ch),
+        batch_norm(out_ch),
     )
 
 

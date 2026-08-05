@@ -192,6 +192,11 @@ uv run python -m deepscs.baseline
 | PESQ mode | narrowband (P.862) | Correct for 8 kHz |
 | SGD momentum | 0.0 (`--momentum`) | Only used if you switch off RMSprop |
 
+Framework defaults differ between Keras and PyTorch and are pinned to the Keras side, so
+the port does not quietly change training dynamics: BatchNorm `eps=1e-3` and
+`momentum=0.01` (Keras' `momentum=0.99` weights the *old* running stat), `glorot_uniform`
+weight init rather than PyTorch's Kaiming, and RMSprop `alpha=0.9, eps=1e-7`.
+
 Deviating is one flag each — `--optimizer adam` trains faster at small scale,
 `--snr-low 0 --snr-high 20` randomizes the training SNR (that is experiment E3, not E0),
 `--subset-size 2000` shrinks the training set.

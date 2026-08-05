@@ -244,7 +244,9 @@ def main():
 
     model = DeepSC_S(filters=args.chan_filters, n_blocks=args.n_blocks).to(device)
     if args.optimizer == "rmsprop":
-        opt = torch.optim.RMSprop(model.parameters(), lr=args.lr)
+        # Keras RMSprop defaults are rho=0.9 / epsilon=1e-7; PyTorch's are alpha=0.99 /
+        # eps=1e-8, a noticeably different averaging window.
+        opt = torch.optim.RMSprop(model.parameters(), lr=args.lr, alpha=0.9, eps=1e-7)
     elif args.optimizer == "sgd":
         opt = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
     else:
