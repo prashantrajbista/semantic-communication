@@ -367,6 +367,7 @@
       <li><a href="#stage-03"><span class="n">03</span>AWGN + power</a></li>
       <li><a href="#stage-04"><span class="n">04</span>Fading</a></li>
       <li><a href="#stage-05"><span class="n">05</span>Real-data results</a></li>
+      <li><a href="#choices"><span class="n">·</span>Design choices</a></li>
       <li><a href="#takeaways"><span class="n">·</span>Takeaways</a></li>
     </ol>
   </nav>
@@ -697,6 +698,52 @@
         <li>Checkpoints are saved every <span class="mono">N_EPOCHS/4</span> epochs during training to build a "quality over time" gallery — the same held-out clip decoded with progressively later weights.</li>
         <li>A later revision made training skip itself entirely if <code>checkpoints/deepsc_s_awgn_final.pt</code> already exists — no reason to burn a real-data training run again just because the notebook restarted.</li>
       </ul>
+    </section>
+
+    <section class="block" id="choices">
+      <h2>Where the paper stops and a decision starts</h2>
+      <p class="dek">A paper is not a spec. Two kinds of gap had to be closed to get running code.</p>
+
+      <h3 class="sub">Underspecified — filled in from the authors' TensorFlow repo</h3>
+      <p>
+        These are values the paper never states. The
+        <a href="https://github.com/Zhenzi-Weng/DeepSC-S" target="_blank" rel="noopener">official implementation</a>
+        was treated as ground truth wherever it disagreed with, or went beyond, the text.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <tr><th>Item</th><th>Chosen</th><th>Why</th></tr>
+          <tr><td>SE-ResNet kernel</td><td class="num">5×5, stride 1, <span class="mono">same</span></td><td>The paper's "4×32" is cardinality × filter count — not a kernel size, which is the easy misread</td></tr>
+          <tr><td>SE reduction ratio <span class="mono">r</span></td><td class="num">4</td><td>Feature depth is small, so squeezing harder leaves the gate almost nothing to work with</td></tr>
+          <tr><td>Feature depth <span class="mono">D</span></td><td class="num">32</td><td>The other half of "4×32"</td></tr>
+          <tr><td>Channel width <span class="mono">N</span></td><td class="num">depth 8</td><td>Exposed as the compression knob; <span class="mono">N = L·(depth/2)</span> complex symbols per frame row</td></tr>
+          <tr><td>Real → complex</td><td>flatten <span class="mono">(L, depth)</span>, view as I/Q pairs, then power-norm</td><td>Matches the repo's reshape order — get this wrong and the constellation is scrambled but the loss still falls</td></tr>
+          <tr><td>Clips ≠ <span class="mono">W=16384</span></td><td>random crop training, tile + reassemble at eval, zero-pad if short</td><td>The paper only ever describes a fixed-length input</td></tr>
+          <tr><td>Rician K-factor</td><td class="num">1.0</td><td>Never stated; swept in stage 4 rather than trusted</td></tr>
+          <tr><td>CSI</td><td>perfect, <span class="mono">x̂ = y/h</span></td><td>Matches the repo; isolates fading from channel estimation</td></tr>
+        </table>
+      </div>
+
+      <h3 class="sub">Deliberate deviations — the paper is explicit, and this repo does otherwise</h3>
+      <div class="table-wrap">
+        <table>
+          <tr><th>Item</th><th>Paper</th><th>Here</th><th>Why</th></tr>
+          <tr><td>Optimizer</td><td>SGD, lr 1e-3</td><td>Adam, lr 1e-3</td><td>Converges far faster at this scale; a one-line swap to check the paper's setting</td></tr>
+          <tr><td>Training SNR</td><td class="num">fixed 8 dB</td><td class="num">uniform 0–20 dB, re-sampled every step</td><td>Augmentation across noise levels rather than specialization to one</td></tr>
+          <tr><td>Training set</td><td class="num">~10k clips</td><td class="num">~2k-clip subset</td><td>Tractable in a single GPU session</td></tr>
+        </table>
+      </div>
+
+      <div class="callout">
+        <span class="label">A deviation you can see in the plot</span>
+        The random-SNR choice is not cosmetic. Reproducing the paper's Fig. 4 — MSE vs SNR, one panel per
+        testing channel, one curve per training channel — gives the same ordering the authors report: the
+        AWGN-trained model collapses worst under fading at low SNR, the Rician-trained model is the robust
+        one everywhere, and the AWGN curve crosses back to the front once the channel is clean enough. But
+        the crossover lands near 11–12 dB instead of the paper's ~8 dB, because these models were never
+        specialized to a single training SNR. Same shape, moved pivot — which is what a documented
+        deviation should look like.
+      </div>
     </section>
 
     <section class="block" id="takeaways">
