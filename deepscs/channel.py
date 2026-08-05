@@ -135,7 +135,12 @@ class ChannelLayer(torch.nn.Module):
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         c, h, w = z.shape[1], z.shape[2], z.shape[3]
-        p = power_norm(to_pairs(z))
-        x = torch.complex(p[..., 0], p[..., 1])
-        x_hat = self.impl(x, self.snr_db)
-        return from_pairs(torch.stack([x_hat.real, x_hat.imag], dim=-1), c, h, w)
+        # Always fp32 here: torch.complex rejects half/bfloat16 inputs, and the power
+        # constraint and noise variance are exactly what must not be quantized away —
+        # a low-precision channel is a different channel.
+        with torch.autocast(device_type=z.device.type, enabled=False):
+            p = power_norm(to_pairs(z.float()))
+            x = torch.complex(p[..., 0], p[..., 1])
+            x_hat = self.impl(x, self.snr_db)
+            out = from_pairs(torch.stack([x_hat.real, x_hat.imag], dim=-1), c, h, w)
+        return out.to(z.dtype)

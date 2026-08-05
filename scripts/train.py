@@ -203,6 +203,12 @@ def main():
     p.add_argument("--snr-low", type=float, default=8.0, help="paper trains at a fixed 8 dB")
     p.add_argument("--snr-high", type=float, default=8.0, help="raise above --snr-low to randomize (E3)")
     p.add_argument("--checkpoint-every", type=int, default=10)
+    p.add_argument("--num-workers", type=int, default=min(8, os.cpu_count() or 1),
+                   help="dataloader workers; loading+resampling costs ~1.1 ms/clip")
+    p.add_argument("--amp", action="store_true",
+                   help="bfloat16 autocast + channels_last, roughly 2x on Ada/Ampere/Hopper. "
+                        "The channel layer stays fp32 either way. Deviates from the "
+                        "reference, which trains in fp32.")
     p.add_argument("--project", default="deepsc-s")
     p.add_argument("--run-name", default=None)
     p.add_argument("--seed", type=int, default=0)
@@ -240,9 +246,14 @@ def main():
 
     print(f"train clips: {len(train_ds)}  |  "
           f"rho = {bandwidth_ratio(args.chan_filters)} channel uses/sample")
-    loader = torch.utils.data.DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True)
+    loader = torch.utils.data.DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True,
+        num_workers=args.num_workers, persistent_workers=args.num_workers > 0,
+        pin_memory=device.type == "cuda")
 
     model = DeepSC_S(filters=args.chan_filters, n_blocks=args.n_blocks).to(device)
+    if args.amp:
+        model = model.to(memory_format=torch.channels_last)
     if args.optimizer == "rmsprop":
         # Keras RMSprop defaults are rho=0.9 / epsilon=1e-7; PyTorch's are alpha=0.99 /
         # eps=1e-8, a noticeably different averaging window.
@@ -262,12 +273,16 @@ def main():
         model.train()
         running = 0.0
         for batch in loader:
-            batch = batch.to(device).view(-1, 1, F, L)
+            batch = batch.to(device, non_blocking=True).view(-1, 1, F, L)
+            if args.amp:
+                batch = batch.to(memory_format=torch.channels_last)
             if not fixed_snr:
                 channel.snr_db = float(np.random.uniform(args.snr_low, args.snr_high))
             opt.zero_grad()
-            x_hat = model(batch, channel=channel)
-            loss = loss_fn(x_hat, batch)
+            # bf16 needs no GradScaler; the channel layer opts back out to fp32 itself
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=args.amp):
+                x_hat = model(batch, channel=channel)
+                loss = loss_fn(x_hat, batch)
             loss.backward()
             opt.step()
             running += loss.item()
